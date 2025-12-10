@@ -5,6 +5,12 @@ js/config.js
 js/config.local.js
 
 # ===================================
+# 本地参考文件 - 不需要上传
+# ===================================
+DEVELOPMENT.md
+screenshots/README.md
+
+# ===================================
 # Node modules
 node_modules/
 
