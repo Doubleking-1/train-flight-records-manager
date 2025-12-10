@@ -16,6 +16,19 @@
 - 导入本地数据文件进行测试
 - 完整功能配置请参考下方[快速开始](#快速开始)部分
 
+## 📸 应用截图
+
+### 主页 - 地图概览
+![主页截图](screenshots/homepage.png)
+
+### 管理页面 - 数据编辑
+![管理页面](screenshots/management.png)
+
+### 统计图表
+![统计图表](screenshots/charts.png)
+
+### 地图可视化
+![地图可视化](screenshots/map-visualization.png)
 
 ## ✨ 主要特性
 
