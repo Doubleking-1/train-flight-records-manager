@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <style>
+    /* Feature Help Modal Styles */
+    #featuresHelpOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 10000;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(2px);
+    }
+
+    #featuresHelpModal {
+      background: var(--panel-bg);
+      color: var(--text);
+      width: 90%;
+      max-width: 600px;
+      max-height: 85vh;
+      overflow-y: auto;
+      border-radius: 12px;
+      padding: 25px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border);
+      position: relative;
+    }
+
+    #featuresHelpModal h3 {
+      margin-top: 0;
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 12px;
+      margin-bottom: 20px;
+    }
+
+    #featuresHelpModal button#featuresHelpClose {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      background: none;
+      border: none;
+      font-size: 24px;
+      color: var(--text);
+      cursor: pointer;
+      opacity: 0.7;
+      transition: opacity 0.2s;
+    }
+
+    #featuresHelpModal button#featuresHelpClose:hover {
+      opacity: 1;
+    }
+
+    #featuresHelpModal li {
+      margin-bottom: 12px;
+      line-height: 1.6;
+    }
+  </style>
+  <title>出行首页概览</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Leaflet for OSM support -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- 引入 API 配置文件 -->
+  <script src="js/config.js"></script>
+  <!-- 动态加载地图 API -->
+  <script>
+    // 标记 API 加载状态
+    window.amapLoaded = false;
+
+    // 动态加载高德地图 API
+    (function () {
+      const amapScript = document.createElement('script');
+      amapScript.src = API_CONFIG.getAmapUrl();
+      amapScript.onload = function () {
+        window.amapLoaded = true;
+        console.log('✅ 高德地图 API 加载完成');
+      };
+      amapScript.onerror = function () {
+        console.error('❌ 高德地图 API 加载失败');
+      };
+      document.head.appendChild(amapScript);
+    })();
+
+    // 动态加载 Google Maps API
+    (function () {
+      const googleScript = document.createElement('script');
+      googleScript.src = API_CONFIG.getGoogleMapsUrl('initGoogleAPI');
+      googleScript.async = true;
+      googleScript.defer = true;
+      document.head.appendChild(googleScript);
+    })();
+
+    // 动态加载 marked.js
+    (function () {
+      const markedScript = document.createElement('script');
+      markedScript.src = API_CONFIG.libraries.marked;
+      document.head.appendChild(markedScript);
+    })();
+  </script>
+  <link rel="stylesheet" href="css/index.css">
+</head>
+
+<body>
+  <div id="sidebar">
+    <div class="card" style="margin-top:4px;">
+      <h2 style="margin:0 0 10px; font-size:17px;">出行概览</h2>
+      <div class="flex" style="margin-bottom:10px;">
+        <button id="toggleThemeBtn" style="flex:1;">暗色模式</button>
+        <a href="app.html" class="nav-link" style="flex:1;">进入管理页面 ➜</a>
+      </div>
+      <select id="mapSelect"
+        style="width:100%; padding:8px; margin-bottom:10px; border-radius:4px; border:1px solid var(--border); background:var(--panel); color:var(--text); font-size:13px;">
+        <option value="amap">🗺️ 高德地图 (Amap)</option>
+        <option value="google">🗺️ 谷歌地图 (Google)</option>
+        <option value="leaflet">🗺️ CartoDB (OpenStreetMap)</option>
+      </select>
+      <script>
+        // 立即初始化地图选择器值
+        (function () {
+          const savedMap = localStorage.getItem('currentMapType') || 'amap';
+          const sel = document.getElementById('mapSelect');
+          if (sel) sel.value = savedMap;
+        })();
+      </script>
+      <p style="margin:0; font-size:11px; line-height:1.5; opacity:.7;">展示火车与飞机行程的总体里程与数量概览，支持一键数据备份 / 恢复。</p>
+    </div>
+    <div class="card">
+      <h3>🔥 汇总统计</h3>
+      <div class="stats-grid" id="summaryStats"></div>
+      <div style="margin-top:10px; font-size:11px; opacity:.7;" id="lastUpdateInfo">—</div>
+    </div>
+    <div class="card">
+      <h3>🤖 智能问答</h3>
+      <p style="margin:0 0 10px; font-size:11px; line-height:1.5; opacity:.7;">基于所有行程数据（火车+飞机），向 AI 提问。</p>
+      <div style="display:flex; gap:8px;">
+        <button id="askGeminiBtn"
+          style="flex:2; padding:8px; background:#6610f2; color:#fff; border:none; border-radius:4px; cursor:pointer;">✨
+          询问 AI</button>
+        <button id="aiSettingsBtn"
+          style="flex:1; padding:0 8px; background:rgba(0,0,0,0.05); color:var(--text); border:1px solid var(--border); border-radius:4px; cursor:pointer; font-size:13px; transition:all 0.2s;"
+          onmouseover="this.style.background='rgba(0,0,0,0.1)'" onmouseout="this.style.background='rgba(0,0,0,0.05)'"
+          title="配置 AI">⚙️ 配置</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>🛠 数据操作</h3>
+      <div class="flex">
+        <button id="refreshBtn" class="primary" style="flex:1;">刷新</button>
+        <button id="clearCacheBtn" class="danger" style="flex:1;">清缓存</button>
+      </div>
+      <div class="flex" style="margin-top:8px;">
+        <button id="backupAllBtn" style="flex:1;">📦 一键备份全部</button>
+        <button id="restoreAllBtn" style="flex:1;">📤 恢复</button>
+      </div>
+
+      <!-- Cloud Sync Buttons -->
+      <div class="flex" style="margin-top:8px; border-top:1px solid var(--border-color); padding-top:8px;">
+        <button id="cloudSettingsBtn" style="flex:1; background:#6c757d; color:#fff;">☁️ 配置同步</button>
+        <button id="cloudUploadBtn" style="flex:1; background:#0d6efd; color:#fff;">⬆️ 上传云端</button>
+        <button id="cloudDownloadBtn" style="flex:1; background:#198754; color:#fff;">⬇️ 下载云端</button>
+      </div>
+      <input type="file" id="restoreAllFile" accept=".json" style="display:none;" />
+      <p style="margin:10px 0 6px; font-size:11px; line-height:1.5; opacity:.8;">本页展示火车与飞机两套数据的快速概览与地图缩略图。详细编辑请进入管理页面。
+      </p>
+
+      <!-- Feature Help Button -->
+      <div class="flex" style="margin-top:12px; border-top:1px solid var(--border-color); padding-top:10px;">
+        <button id="featuresHelpBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#343a40; color:#fff; border:none; border-radius:3px; cursor:pointer;">📘
+          功能说明</button>
+      </div>
+    </div>
+  </div>
+  <div id="main">
+    <div id="mapsWrap">
+      <div class="map-panel map-panel-full">
+        <h4><span class="legend-dot train"></span><span class="legend-dot plane"></span>🌍 合并视图</h4>
+        <div id="combinedMap" class="map"></div>
+      </div>
+      <div class="map-panel">
+        <h4><span class="legend-dot train"></span>🚄 火车线路</h4>
+        <div id="trainMap" class="map"></div>
+      </div>
+      <div class="map-panel">
+        <h4><span class="legend-dot plane"></span>✈️ 飞机线路</h4>
+        <div id="planeMap" class="map"></div>
+      </div>
+    </div>
+    <div id="footerBar">
+      <span>同步显示两种交通方式的已缓存线路 (仅展示已有 pathWGS 记录)</span>
+      <span id="statusPill" class="pill">准备</span>
+    </div>
+  </div>
+  <!-- Cloud Sync Settings Modal -->
+  <div id="cloudSettingsModalOverlay"
+    style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
+    <div
+      style="background:var(--panel); padding:20px; border-radius:8px; width:90%; max-width:400px; border:1px solid var(--border); box-shadow:0 4px 12px rgba(0,0,0,0.25);">
+      <h3 style="margin-top:0; color:var(--text); font-size:16px;">☁️ 云端同步配置 (JSONBin)</h3>
+      <p style="font-size:12px; color:var(--text); opacity:0.7; line-height:1.5;">
+        请前往 <a href="https://jsonbin.io" target="_blank" style="color:var(--accent);">jsonbin.io</a> 注册并获取 API Key。<br>
+        Bin ID 可留空，首次上传时会自动创建。
+      </p>
+      <div style="margin-bottom:12px;">
+        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text);">Master Key
+          (必填)</label>
+        <input type="password" id="cloudApiKey"
+          style="width:100%; padding:8px; border:1px solid var(--border); border-radius:4px; background:var(--bg); color:var(--text); box-sizing:border-box;"
+          placeholder="$2b$10$...">
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block; font-size:12px; margin-bottom:4px; color:var(--text);">Bin ID
+          (选填)</label>
+        <input type="text" id="cloudBinId"
+          style="width:100%; padding:8px; border:1px solid var(--border); border-radius:4px; background:var(--bg); color:var(--text); box-sizing:border-box;"
+          placeholder="60d5f...">
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button id="cloudSettingsCancelBtn"
+          style="padding:8px 16px; border:1px solid var(--border); background:transparent; border-radius:4px; cursor:pointer; color:var(--text);">取消</button>
+        <button id="cloudSettingsSaveBtn"
+          style="padding:8px 16px; border:none; background:var(--accent); color:#fff; border-radius:4px; cursor:pointer;">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Configuration Modal -->
+  <div id="aiConfigModalOverlay"
+    style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000; align-items:center; justify-content:center;">
+    <div
+      style="background:var(--panel); width:90%; max-width:480px; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.25); border:1px solid var(--border); display:flex; flex-direction:column;">
+      <div
+        style="padding:15px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0; color:var(--text); font-size:16px;">⚙️ AI 配置</h3>
+        <button id="aiConfigCloseBtn"
+          style="background:none; border:none; font-size:20px; cursor:pointer; color:var(--text);">&times;</button>
+      </div>
+      <div style="padding:20px; color:var(--text);">
+        <!-- Provider Selection -->
+        <div style="margin-bottom:15px;">
+          <label style="display:block; font-size:12px; margin-bottom:6px; font-weight:600;">选择 AI 提供商</label>
+          <div style="display:flex; gap:12px;">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+              <input type="radio" name="aiProvider" value="custom" checked> 第三方 AI (OpenAI 兼容)
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+              <input type="radio" name="aiProvider" value="gemini"> Gemini 官方
+            </label>
+          </div>
+        </div>
+
+        <!-- Dynamic Fields -->
+        <div id="aiConfigFields">
+          <!-- Populated by JS -->
+        </div>
+
+      </div>
+      <div
+        style="padding:15px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:10px; background:var(--bg);">
+        <button id="aiConfigCancelBtn"
+          style="padding:8px 16px; background:transparent; border:1px solid var(--border); color:var(--text); border-radius:4px; cursor:pointer;">取消</button>
+        <button id="aiConfigSaveBtn"
+          style="padding:8px 16px; background:var(--accent); color:#fff; border:none; border-radius:4px; cursor:pointer;">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gemini Q&A Modal -->
+  <div id="geminiQAModalOverlay"
+    style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+    <div
+      style="background:var(--panel); width:90%; max-width:600px; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.2); display:flex; flex-direction:column; max-height:80vh;">
+      <div
+        style="padding:15px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0; color:var(--text);">✨ 询问 AI</h3>
+        <button id="geminiQACloseBtn"
+          style="background:none; border:none; font-size:20px; cursor:pointer; color:var(--text);">&times;</button>
+      </div>
+      <div style="padding:15px; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
+        <div id="geminiQAChatHistory"
+          style="flex:1; min-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:4px; padding:10px; background:var(--bg); margin-bottom:10px;">
+          <div style="color:var(--text); opacity:0.7; text-align:center; margin-top:20px;">请输入您的问题，AI
+            将根据所有行程数据（火车+飞机）进行回答。</div>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <input type="text" id="geminiQAInput" placeholder="例如：我总共去了多少个国家？哪一年出行最频繁？"
+            style="flex:1; padding:8px; border:1px solid var(--border); border-radius:4px; background:var(--bg); color:var(--text); user-select:text; -webkit-user-select:text; pointer-events:auto;"
+            onkeydown="event.stopPropagation()" onkeypress="event.stopPropagation()"
+            onmousedown="event.stopPropagation()" onclick="this.focus(); event.stopPropagation()">
+          <button id="geminiQASendBtn"
+            style="padding:8px 15px; background:var(--accent); color:#fff; border:none; border-radius:4px; cursor:pointer;">发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/cloud_sync.js"></script>
+  <script src="js/index.js"></script>
+  <!-- 功能说明 Modal -->
+  <div id="featuresHelpOverlay">
+    <div id="featuresHelpModal">
+      <button id="featuresHelpClose">&times;</button>
+      <h3>功能总览与使用说明</h3>
+      <!-- 内容由 js/features_help.js 动态加载 -->
+    </div>
+  </div>
+  <script src="js/features_help.js"></script>
+</body>
+
+</html>

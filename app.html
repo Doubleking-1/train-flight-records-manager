@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <title>火车票记录与地图示例（含暗色模式）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 引入 API 配置文件 -->
+  <!-- Gemini Q&A Modal -->
+  <div id="geminiQAModalOverlay"
+    style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
+    <div
+      style="background:var(--modal-bg); width:90%; max-width:600px; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.2); display:flex; flex-direction:column; max-height:80vh;">
+      <div
+        style="padding:15px; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0; color:var(--text-color);">✨ 询问 AI</h3>
+        <button id="geminiQACloseBtn"
+          style="background:none; border:none; font-size:20px; cursor:pointer; color:var(--text-color);">&times;</button>
+      </div>
+      <div style="padding:15px; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
+        <div id="geminiQAChatHistory"
+          style="flex:1; min-height:300px; overflow-y:auto; border:1px solid var(--border-color); border-radius:4px; padding:10px; background:var(--bg-color); margin-bottom:10px;">
+          <div style="color:var(--text-color); opacity:0.7; text-align:center; margin-top:20px;">请输入您的问题，AI
+            将根据当前表格数据进行回答。</div>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <input type="text" id="geminiQAInput" placeholder="例如：我今年去了哪些城市？花费最多的是哪次？"
+            style="flex:1; padding:8px; border:1px solid var(--input-border); border-radius:4px; background:var(--input-bg); color:var(--text-color);">
+          <button id="geminiQASendBtn"
+            style="padding:8px 15px; background:var(--primary-color); color:#fff; border:none; border-radius:4px; cursor:pointer;">发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <!-- Leaflet CSS & JS (for OpenStreetMap) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- 动态加载 API 和外部库 -->
+  <script>
+    // 提前占位，避免 Google 回调到未定义函数导致 InvalidValueError
+    window.initGoogleMapsAPI = window.initGoogleMapsAPI || function () {
+      // 占位：真正逻辑在底部重新赋值
+      console.log('[占位] initGoogleMapsAPI 早期触发');
+    };
+
+    // 动态加载高德地图 API
+    (function () {
+      const amapScript = document.createElement('script');
+      amapScript.src = API_CONFIG.getAmapUrl();
+      document.head.appendChild(amapScript);
+    })();
+
+    // 动态加载 Google Maps API
+    (function () {
+      const googleScript = document.createElement('script');
+      googleScript.src = API_CONFIG.getGoogleMapsUrl('initGoogleMapsAPI');
+      googleScript.async = true;
+      googleScript.defer = true;
+      document.head.appendChild(googleScript);
+    })();
+
+    // 动态加载 Marked.js
+    (function () {
+      const markedScript = document.createElement('script');
+      markedScript.src = API_CONFIG.libraries.marked;
+      document.head.appendChild(markedScript);
+    })();
+
+    // 动态加载 SheetJS
+    (function () {
+      const sheetjsScript = document.createElement('script');
+      sheetjsScript.src = API_CONFIG.libraries.sheetjs;
+      document.head.appendChild(sheetjsScript);
+    })();
+
+    // 动态加载 Chart.js
+    (function () {
+      const chartjsScript = document.createElement('script');
+      chartjsScript.src = API_CONFIG.libraries.chartjs;
+      document.head.appendChild(chartjsScript);
+    })();
+
+    // 动态加载 html2canvas
+    (function () {
+      const h2cScript = document.createElement('script');
+      h2cScript.src = API_CONFIG.libraries.html2canvas;
+      document.head.appendChild(h2cScript);
+    })();
+  </script>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+
+<body>
+
+  <!-- 顶部模式切换 -->
+  <div id="topbar">
+    <div id="mainNavGroup"
+      style="display:flex; gap:6px; background:linear-gradient(135deg, rgba(13,110,253,0.12), rgba(99,179,237,0.12)); padding:4px 6px; border:1px solid var(--border-color); border-radius:8px;">
+      <a href="index.html" id="goHomeBtn" class="mode-btn"
+        style="text-decoration:none; display:inline-flex; align-items:center; justify-content:center;">🏠 主页</a>
+      <button id="modeTrainBtn" class="mode-btn">🚆 火车</button>
+      <button id="modePlaneBtn" class="mode-btn">✈️ 飞机</button>
+    </div>
+    <button id="sidebarToggleBtn" class="mode-btn" style="margin-left:auto;">隐藏侧边栏</button>
+  </div>
+
+  <!-- Sidebar: Form + Theme Toggle -->
+  <div id="sidebar">
+    <button id="themeToggle">切换暗色模式</button>
+
+    <select id="mapSelect"
+      style="width:100%; padding:8px; margin-bottom:10px; border-radius:4px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color);">
+      <option value="amap">🗺️ 高德地图 (Amap)</option>
+      <option value="google">🗺️ 谷歌地图 (Google)</option>
+      <option value="leaflet">🗺️ CartoDB (OpenStreetMap)</option>
+    </select>
+    <script>
+      // Initialize mapSelect value immediately to prevent flash
+      (function () {
+        const savedMap = localStorage.getItem('currentMapType') || 'amap';
+        const sel = document.getElementById('mapSelect');
+        if (sel) sel.value = savedMap;
+      })();
+    </script>
+    <h2 id="sectionTitle" style="margin-top:10px;">火车票记录</h2>
+
+    <!-- 分组：地图线路 & 动画 -->
+    <div class="sidebar-group">
+      <h4>🛰 路线绘制 / 回放</h4>
+      <p class="sidebar-group-desc">使用内置缓存避免重复地理编码；支持强制重算与按顺序动画回放。</p>
+      <div class="sidebar-btn-row">
+        <button id="forceRedrawBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#343a40; color:#fff; border:none; border-radius:3px; cursor:pointer;"
+          title="清除已缓存路径并重新逐条计算">♻️ 重新绘制线路</button>
+        <button id="replayBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#198754; color:#fff; border:none; border-radius:3px; cursor:pointer;"
+          title="打开动画遮罩，按顺序回放已缓存路径">▶️ 动画回放</button>
+      </div>
+      <div id="pathErrorBox"
+        style="margin-top:8px; display:none; background:#fff3cd; color:#664d03; border:1px solid #ffe69c; padding:6px 8px; border-radius:4px; max-height:120px; overflow-y:auto; font-size:11px; line-height:1.4;">
+        <div style="font-weight:600; margin-bottom:4px;">⚠️ 线路绘制失败</div>
+        <ul id="pathErrorList" style="margin:0; padding-left:18px;"></ul>
+        <button id="clearPathErrorsBtn"
+          style="margin-top:4px; width:100%; background:#ffc107; border:none; border-radius:3px; padding:4px 6px; cursor:pointer; font-size:11px;">清除提示</button>
+      </div>
+    </div>
+
+    <!-- 分组：智能问答 -->
+    <div class="sidebar-group">
+      <h4>🤖 智能问答</h4>
+      <p class="sidebar-group-desc">基于当前表格数据，向 AI 提问。</p>
+      <div class="sidebar-btn-row">
+        <button id="askGeminiBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#6610f2; color:#fff; border:none; border-radius:3px; cursor:pointer;">✨
+          询问 AI</button>
+      </div>
+    </div>
+
+    <!-- 分组：年度报告 -->
+    <div class="sidebar-group">
+      <h4>📅 年度出行报告</h4>
+      <p class="sidebar-group-desc">生成类似“年度听歌报告”的长图，回顾您的年度足迹。</p>
+      <div class="sidebar-btn-row">
+        <button id="yearlyReportBtn"
+          style="flex:1; padding:7px; font-size:11px; background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); color:#fff; border:none; border-radius:3px; cursor:pointer;">✨
+          生成年度报告</button>
+      </div>
+    </div>
+
+    <!-- 分组：数据导入 / 导出 -->
+    <div class="sidebar-group">
+      <h4>📥 数据导入 / 导出</h4>
+      <p class="sidebar-group-desc">表格数据双向流转：从外部文件导入，或将当前数据分享/备份。</p>
+      <div class="sidebar-btn-row">
+        <button id="importCsvBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#fd7e14; color:#fff; border:none; border-radius:3px; cursor:pointer;">📄
+          导入CSV</button>
+        <button id="exportCsvBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#28a745; color:#fff; border:none; border-radius:3px; cursor:pointer;">💾
+          导出CSV</button>
+      </div>
+      <div class="sidebar-btn-row">
+        <button id="importExcelBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#17a2b8; color:#fff; border:none; border-radius:3px; cursor:pointer;">📊
+          导入Excel</button>
+        <button id="exportJsonBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#6f42c1; color:#fff; border:none; border-radius:3px; cursor:pointer;">📋
+          导出JSON</button>
+      </div>
+    </div>
+
+    <!-- 分组：备份 / 恢复 -->
+    <div class="sidebar-group">
+      <h4>🛡 数据备份 / 恢复</h4>
+      <p class="sidebar-group-desc">完整保存 <small class="code-tag">records + 视图设置</small>，迁移或重装浏览器时快速恢复。</p>
+      <div class="sidebar-btn-row">
+        <button id="backupBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#dc3545; color:#fff; border:none; border-radius:3px; cursor:pointer;">💾
+          备份数据</button>
+        <button id="restoreBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#ffc107; color:#111; border:none; border-radius:3px; cursor:pointer;">📤
+          恢复数据</button>
+      </div>
+    </div>
+
+    <!-- 分组：帮助 / 说明 -->
+    <div class="sidebar-group">
+      <h4>❓ 帮助 / 说明</h4>
+      <p class="sidebar-group-desc">查看完整功能列表与使用技巧。</p>
+      <div class="sidebar-btn-row">
+        <button id="featuresHelpBtn"
+          style="flex:1; padding:7px; font-size:11px; background:#343a40; color:#fff; border:none; border-radius:3px; cursor:pointer;">📘
+          功能说明</button>
+      </div>
+    </div>
+
+    <input type="file" id="importCsvFile" accept=".csv" style="display: none;">
+    <input type="file" id="importExcelFile" accept=".xlsx,.xls" style="display: none;">
+    <input type="file" id="restoreFile" accept=".json" style="display: none;">
+
+    <div id="modeIndicator">当前操作：行内编辑</div>
+    <div id="form"></div>
+  </div>
+
+  <!-- Main Area: Summary + Map + Table -->
+  <div id="main">
+    <div id="container">
+      <!-- 地图容器 -->
+      <div id="mapContainer"></div>
+      <!-- 地点标记按钮已移除 -->
+      <!-- 年份图例在地图右下角 -->
+      <div id="yearLegend">
+        <h4>年份图例</h4>
+        <div id="legendContent"></div>
+      </div>
+    </div>
+
+    <!-- 总结面板 -->
+    <div id="summaryPanel">
+      <div class="summary-tabs">
+        <button class="summary-tab active" data-tab="all">历史总结</button>
+        <button class="summary-tab" data-tab="yearly">年度总结</button>
+      </div>
+
+      <!-- 历史总结内容 -->
+      <div id="allSummary" class="summary-content active">
+        <div class="stats-grid" id="allStatsGrid">
+          <!-- 统计卡片将通过JavaScript动态生成 -->
+        </div>
+      </div>
+
+      <!-- 年度总结内容 -->
+      <div id="yearlySummary" class="summary-content">
+        <div class="year-selector">
+          <select id="yearSelect">
+            <option value="">请选择年份</option>
+          </select>
+        </div>
+        <div class="stats-grid" id="yearlyStatsGrid">
+          <!-- 统计卡片将通过JavaScript动态生成 -->
+        </div>
+      </div>
+    </div>
+
+    <!-- 图表面板 -->
+    <div id="chartsPanel">
+      <div class="charts-grid">
+        <div class="chart-container">
+          <div class="chart-title">年度乘车次数</div>
+          <canvas id="tripsChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">年度里程 (公里)</div>
+          <canvas id="distanceChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">年度花费 (元)</div>
+          <canvas id="costChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">年度乘车时长 (小时)</div>
+          <canvas id="durationChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title" id="bureauChartTitle">铁路局统计</div>
+          <canvas id="bureauChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title" id="typeChartTitle">车型统计</div>
+          <canvas id="typeChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新增统计面板 -->
+    <div id="statsPanel"
+      style="margin-bottom: 15px; padding: 10px; background: var(--form-bg); border: 1px solid var(--border-color); border-radius: 5px;">
+      <h4 style="margin: 0 0 10px 0; font-size: 14px; color: var(--text-color);">📊 出行统计</h4>
+
+      <!-- 路线热力图 -->
+      <div id="routeHeatmap" style="margin-bottom: 15px; align-self: stretch;">
+        <h5 style="margin: 0 0 8px 0; font-size: 12px; color: var(--text-color);">🔥 热门路线</h5>
+        <div id="routeList" style="max-height: 260px; overflow-y: auto; font-size: 11px;"></div>
+      </div>
+
+      <!-- 地区统计 -->
+      <div id="regionStats" style="align-self: stretch;">
+        <h5 style="margin: 0 0 8px 0; font-size: 12px; color: var(--text-color);">🗺️ 到访城市</h5>
+        <div id="cityList" style="max-height: 260px; overflow-y: auto; font-size: 11px;"></div>
+      </div>
+    </div>
+
+    <!-- Map container moved to top -->
+
+    <!-- 动画回放地图遮罩 -->
+    <div id="replayOverlay"
+      style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+      <div
+        style="width:88%; height:85%; background:var(--bg-color); border:1px solid var(--border-color); border-radius:10px; display:grid; grid-template-columns: 260px 1fr; grid-template-rows:auto 1fr; overflow:hidden; box-shadow:0 6px 24px rgba(0,0,0,.35);">
+        <!-- 头部工具条 -->
+        <div
+          style="grid-column:1 / -1; display:flex; align-items:center; gap:10px; padding:8px 14px; background:var(--table-head-bg); border-bottom:1px solid var(--border-color);">
+          <strong style="flex:1; letter-spacing:.5px;">线路动画回放</strong>
+          <button id="replayCloseBtn" class="replay-ctrl-btn" style="background:#dc3545; color:#fff;">关闭</button>
+        </div>
+        <!-- 左侧控制面板 -->
+        <div
+          style="padding:12px 14px; display:flex; flex-direction:column; gap:10px; background:var(--sidebar-bg); border-right:1px solid var(--border-color); font-size:12px;">
+          <div id="replaySourceBox"
+            style="font-size:11px; line-height:1.5; background:var(--form-bg); border:1px solid var(--border-color); padding:10px 10px; border-radius:6px; display:flex; flex-direction:column; gap:6px;">
+            <div style="font-weight:600;">数据来源</div>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
+              <input type="radio" name="replaySource" value="train" style="margin:0;"> 🚆 火车记录
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
+              <input type="radio" name="replaySource" value="plane" style="margin:0;"> ✈️ 飞机记录
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
+              <input type="radio" name="replaySource" value="all" checked style="margin:0;"> 🌍 全部 (按时间合并)
+            </label>
+          </div>
+          <div id="replayModeBox"
+            style="font-size:11px; line-height:1.5; background:var(--form-bg); border:1px solid var(--border-color); padding:10px 10px; border-radius:6px; display:flex; flex-direction:column; gap:6px;">
+            <div style="font-weight:600;">播放模式</div>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
+              <input type="radio" name="replayMode" value="all" checked style="margin:0;"> 全部年份播放
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
+              <input type="radio" name="replayMode" value="sequential" style="margin:0;"> 逐年依次播放 (年与年之间清空)
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px;">
+              <input type="radio" name="replayMode" value="single" style="margin:0;"> 指定年份播放
+              <select id="replayYearSelect" disabled
+                style="padding:3px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px;">
+                <option value="">选择年份</option>
+              </select>
+            </label>
+            <div style="opacity:.65;">提示：开始后可暂停；逐年模式每年结束后自动切换下一年。</div>
+            <div style="opacity:.8;">当前：<span id="replayYearModeHint"
+                style="color:var(--primary-color); font-weight:600;">全部年份</span></div>
+          </div>
+
+          <!-- 播放设置：速度与粗细 -->
+          <div id="replaySettingsBox"
+            style="font-size:11px; line-height:1.5; background:var(--form-bg); border:1px solid var(--border-color); padding:10px 10px; border-radius:6px; display:flex; flex-direction:column; gap:8px;">
+            <div style="font-weight:600;">播放设置</div>
+
+            <!-- 速度 -->
+            <div style="display:flex; flex-direction:column; gap:2px;">
+              <div style="display:flex; justify-content:space-between;">
+                <span>绘制速度</span>
+                <span id="replaySpeedValue">x1.0</span>
+              </div>
+              <input type="range" id="replaySpeedInput" min="10" max="100" value="30" step="10"
+                style="width:100%; cursor:pointer;">
+            </div>
+
+            <!-- 粗细 -->
+            <div style="display:flex; flex-direction:column; gap:2px;">
+              <div style="display:flex; justify-content:space-between;">
+                <span>线条粗细</span>
+                <span id="replayWidthValue">1px</span>
+              </div>
+              <input type="range" id="replayWidthInput" min="0.1" max="3" value="1" step="0.1"
+                style="width:100%; cursor:pointer;">
+            </div>
+          </div>
+          <!-- 操作按钮：开始 / 暂停 / 重置 -->
+          <div id="replayActionBar" style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="replayBtnStart" class="replay-ctrl-btn" style="flex:1;">开始</button>
+            <button id="replayBtnPause" class="replay-ctrl-btn" style="flex:1;">暂停</button>
+            <button id="replayBtnReset" class="replay-ctrl-btn" style="flex:1;">重置</button>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px;">
+            <div style="display:flex; justify-content:space-between; font-size:11px;">
+              <span>当前年份进度</span>
+              <span><span id="replayYearProgressCnt">0</span>/<span id="replayYearProgressTotal">0</span></span>
+            </div>
+            <div style="height:6px; background:var(--table-head-bg); border-radius:4px; overflow:hidden;">
+              <div id="replayYearProgressBar"
+                style="height:100%; width:0%; background:linear-gradient(90deg, var(--primary-color), #42c3ff); transition:width .25s;">
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:auto; font-size:11px; opacity:.55;">ESC 关闭；空格暂停/继续</div>
+        </div>
+        <!-- 右侧地图 + 总体状态 -->
+        <div style="display:flex; flex-direction:column; position:relative;">
+          <div
+            style="padding:6px 12px; font-size:12px; line-height:1.4; color:var(--text-color); border-bottom:1px solid var(--border-color); display:flex; flex-wrap:wrap; gap:16px;">
+            <div>总路线：<span id="replayTotal">0</span></div>
+            <div>已走：<span id="replayProgress">0</span></div>
+            <div id="replayStatus" style="color:#0d6efd;">准备就绪</div>
+          </div>
+          <div style="position:relative; flex:1; width:100%; height:100%;">
+            <div id="replayMap" style="width:100%; height:100%;"></div>
+
+            <!-- Color Legend for All mode -->
+            <div id="replayColorLegend" style="position:absolute; top:10px; left:10px; 
+                        background:var(--modal-bg); 
+                        backdrop-filter: blur(5px);
+                        border:1px solid var(--border-color); 
+                        border-radius:6px; 
+                        box-shadow:0 2px 8px rgba(0,0,0,0.15); 
+                        padding:8px 10px; 
+                        z-index:1010;
+                        font-size:11px;
+                        display:none;">
+              <div style="font-weight:600; margin-bottom:4px; color:var(--text-color);">路线颜色</div>
+              <div style="display:flex; align-items:center; gap:6px; margin-bottom:2px;">
+                <div style="width:20px; height:3px; background:#F44336; border-radius:2px;"></div>
+                <span style="color:var(--text-color);">火车</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <div style="width:20px; height:3px; background:#2196F3; border-radius:2px;"></div>
+                <span style="color:var(--text-color);">飞机</span>
+              </div>
+            </div>
+
+            <!-- 悬浮信息面板 -->
+            <div id="replayFloatingInfo" style="position:absolute; bottom:20px; right:20px; width:280px; max-height:320px; 
+                        background:var(--modal-bg); 
+                        backdrop-filter: blur(5px);
+                        border:1px solid var(--border-color); 
+                        border-radius:8px; 
+                        box-shadow:0 4px 16px rgba(0,0,0,0.2); 
+                        padding:10px; 
+                        z-index:1010; 
+                        display:flex; flex-direction:column; gap:8px;
+                        font-size:11px;">
+
+              <!-- 当前线路 -->
+              <div
+                style="background:var(--form-bg, rgba(0,0,0,0.03)); padding:8px; border-radius:6px; border:1px solid var(--border-color);">
+                <div style="font-weight:600; margin-bottom:4px; color:var(--text-color);">累计数据</div>
+                <div id="replayCurrentRoute" style="word-break:break-all; opacity:.9; color:var(--text-color);">—</div>
+              </div>
+
+              <!-- 线路列表 -->
+              <div
+                style="flex:1; display:flex; flex-direction:column; background:var(--form-bg, rgba(0,0,0,0.03)); padding:8px; border-radius:6px; border:1px solid var(--border-color); min-height:100px; overflow:hidden;">
+                <div style="font-weight:600; margin-bottom:6px; color:var(--text-color); flex-shrink:0;">线路列表 (累计)</div>
+                <div style="flex:1; overflow-y:auto; padding-right:2px;">
+                  <ul id="replayRouteList"
+                    style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:4px;"></ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <table id="historyTable">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th class="sortable" data-field="date">日期</th>
+          <th class="sortable" data-field="time">时间</th>
+          <th class="sortable" data-field="duration">时长</th>
+          <th class="sortable" data-field="trainNo" id="th-trainNo">车次</th>
+          <th class="sortable" data-field="startStation" id="th-startStation">起点站</th>
+          <th class="sortable" data-field="startCity" id="th-startCity">起点城市</th>
+          <th class="sortable" data-field="endStation" id="th-endStation">终点站</th>
+          <th class="sortable" data-field="endCity" id="th-endCity">终点城市</th>
+          <th class="sortable" data-field="seatClass" id="th-seatClass">座席</th>
+          <th class="sortable" data-field="trainType" id="th-trainType">车型号</th>
+          <th class="sortable" data-field="bureau" id="th-bureau">铁路局</th>
+          <th class="sortable" data-field="cost">费用</th>
+          <th class="sortable" data-field="distance">里程</th>
+          <th class="sortable" data-field="rpk">RMB/km</th>
+          <th class="sortable" data-field="speed">km/h</th>
+          <th>备注</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin: 8px 0 0;">
+      <button id="addRowBtn"
+        style="padding:6px 10px;font-size:12px;border:1px solid var(--border-color);background:var(--btn-bg);color:var(--text-color);border-radius:4px;cursor:pointer;">➕
+        新增一行</button>
+    </div>
+  </div>
+
+
+  <!-- 年度报告 Modal -->
+  <div id="reportModalOverlay"
+    style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:3000; align-items:center; justify-content:center; overflow-y:auto;">
+    <div
+      style="background:transparent; width:100%; max-width:480px; margin:20px auto; display:flex; flex-direction:column; align-items:center;">
+
+      <!-- 控制栏 -->
+      <div
+        style="background:var(--modal-bg); padding:10px 15px; border-radius:10px; margin-bottom:15px; display:flex; gap:10px; width:100%; box-sizing:border-box; box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+        <select id="reportYearSelect"
+          style="flex:1; padding:8px; border-radius:5px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color);">
+          <option value="">选择年份...</option>
+        </select>
+        <button id="generateReportBtn"
+          style="padding:8px 15px; background:var(--primary-color); color:#fff; border:none; border-radius:5px; cursor:pointer;">生成</button>
+        <button id="closeReportBtn"
+          style="padding:8px 15px; background:var(--btn-bg); color:var(--text-color); border:1px solid var(--border-color); border-radius:5px; cursor:pointer;">关闭</button>
+      </div>
+
+      <!-- 报告预览区域 (将被截图) -->
+      <div id="reportContent"
+        style="width:100%; background:#fff; border-radius:0; overflow:hidden; position:relative; box-shadow:0 10px 30px rgba(0,0,0,0.5);">
+        <!-- 动态生成的内容将填充在这里 -->
+        <div style="padding:40px; text-align:center; color:#666;">请选择年份并点击生成</div>
+      </div>
+
+      <!-- 底部操作 -->
+      <div style="margin-top:15px; display:flex; gap:10px;">
+        <button id="saveReportImgBtn"
+          style="padding:10px 20px; background:#28a745; color:#fff; border:none; border-radius:30px; font-weight:bold; cursor:pointer; box-shadow:0 4px 12px rgba(40,167,69,0.4); display:none;">💾
+          保存为图片</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 功能说明 Modal -->
+  <div id="featuresHelpOverlay">
+    <div id="featuresHelpModal">
+      <button id="featuresHelpClose">&times;</button>
+      <h3>功能总览与使用说明</h3>
+      <!-- 内容由 js/features_help.js 动态加载 -->
+    </div>
+  </div>
+
+
+  <!-- Gemini Q&A Modal -->
+  <div id="geminiQAModalOverlay"
+    style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+    <div
+      style="background:var(--modal-bg); width:90%; max-width:600px; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.2); display:flex; flex-direction:column; max-height:80vh;">
+      <div
+        style="padding:15px; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0; color:var(--text-color);">✨ 询问 AI</h3>
+        <button id="geminiQACloseBtn"
+          style="background:none; border:none; font-size:20px; cursor:pointer; color:var(--text-color);">&times;</button>
+      </div>
+      <div style="padding:15px; flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
+        <div id="geminiQAChatHistory"
+          style="flex:1; min-height:300px; overflow-y:auto; border:1px solid var(--border-color); border-radius:4px; padding:10px; background:var(--bg-color); margin-bottom:10px;">
+          <div style="color:var(--text-color); opacity:0.7; text-align:center; margin-top:20px;">请输入您的问题，AI
+            将根据当前表格数据进行回答。</div>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <input type="text" id="geminiQAInput" placeholder="例如：我今年去了哪些城市？花费最多的是哪次？"
+            style="flex:1; padding:8px; border:1px solid var(--input-border); border-radius:4px; background:var(--input-bg); color:var(--text-color); user-select:text; -webkit-user-select:text; pointer-events:auto;"
+            onkeydown="event.stopPropagation()" onkeypress="event.stopPropagation()"
+            onmousedown="event.stopPropagation()" onclick="this.focus(); event.stopPropagation()">
+          <button id="geminiQASendBtn"
+            style="padding:8px 15px; background:var(--primary-color); color:#fff; border:none; border-radius:4px; cursor:pointer;">发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+  <script src="js/features_help.js"></script>
+</body>
+
+</html>
