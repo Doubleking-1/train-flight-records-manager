@@ -2,6 +2,7 @@ const USER_KEY = 'username';
 const TRAIN_KEY = 'trainRecords';
 const PLANE_KEY = 'planeRecords';
 const GEOCODE_CACHE_KEY = 'geocodeCache';
+let currentMapType = 'amap'; // 'amap' | 'google' | 'leaflet'
 let trainMap, planeMap, combinedMap;
 
 function initGoogleAPI() { /* 占位回调，实际使用高德主渲染 */ }
@@ -114,10 +115,21 @@ function updateSummary() {
 
 function applyMapTheme() {
   const isDark = document.body.classList.contains('dark');
-  const styleId = isDark ? 'amap://styles/dark' : 'amap://styles/normal';
-  try { if (trainMap) trainMap.setMapStyle(styleId); } catch (e) { }
-  try { if (planeMap) planeMap.setMapStyle(styleId); } catch (e) { }
-  try { if (combinedMap) combinedMap.setMapStyle(styleId); } catch (e) { }
+  if (currentMapType === 'amap') {
+    // Use same style identifiers as management page for consistency
+    const styleId = isDark ? API_CONFIG.amap.styles.dark : API_CONFIG.amap.styles.light;
+    try { if (trainMap) trainMap.setMapStyle(styleId); } catch (e) { }
+    try { if (planeMap) planeMap.setMapStyle(styleId); } catch (e) { }
+    try { if (combinedMap) combinedMap.setMapStyle(styleId); } catch (e) { }
+  } else if (currentMapType === 'leaflet') {
+    const filter = isDark ? 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)' : 'none';
+    [trainMap, planeMap, combinedMap].forEach(m => {
+      if (m && m.getContainer) {
+        try { m.getContainer().style.filter = filter; } catch (e) { }
+      }
+    });
+  }
+  // Google Maps theme is set during initialization
 }
 
 function applyThemeUI() {
@@ -127,28 +139,101 @@ function applyThemeUI() {
 }
 
 function initMaps() {
-  // 检查高德地图 API 是否已加载
-  if (typeof AMap === 'undefined') {
-    console.warn('⏳ 高德地图 API 尚未加载，等待中...');
-    // 使用轮询等待 API 加载
-    const checkInterval = setInterval(() => {
-      if (typeof AMap !== 'undefined') {
-        clearInterval(checkInterval);
-        console.log('✅ 高德地图 API 已就绪，开始初始化地图');
-        initMaps(); // 递归调用自己
-      }
-    }, 100);
-    return;
+  // Destroy existing maps - detect type from instance rather than currentMapType
+  if (trainMap) {
+    try {
+      if (trainMap.destroy) trainMap.destroy(); // AMap
+      else if (trainMap.remove) trainMap.remove(); // Leaflet
+      else document.getElementById('trainMap').innerHTML = ''; // Google or fallback
+    } catch (e) { }
+    trainMap = null;
+  }
+  if (planeMap) {
+    try {
+      if (planeMap.destroy) planeMap.destroy();
+      else if (planeMap.remove) planeMap.remove();
+      else document.getElementById('planeMap').innerHTML = '';
+    } catch (e) { }
+    planeMap = null;
+  }
+  if (combinedMap) {
+    try {
+      if (combinedMap.destroy) combinedMap.destroy();
+      else if (combinedMap.remove) combinedMap.remove();
+      else document.getElementById('combinedMap').innerHTML = '';
+    } catch (e) { }
+    combinedMap = null;
   }
 
-  try {
-    trainMap = new AMap.Map('trainMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false });
-    planeMap = new AMap.Map('planeMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false });
-    combinedMap = new AMap.Map('combinedMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false });
-    applyMapTheme();
-    console.log('✅ 地图初始化成功（包括合并视图）');
-  } catch (e) {
-    console.error('❌ 地图初始化失败:', e);
+  // Initialize based on currentMapType
+  if (currentMapType === 'amap') {
+    if (typeof AMap === 'undefined') {
+      console.warn('⏳ 高德地图 API 尚未加载，等待中...');
+      const checkInterval = setInterval(() => {
+        if (typeof AMap !== 'undefined') {
+          clearInterval(checkInterval);
+          console.log('✅ 高德地图 API 已就绪，开始初始化地图');
+          initMaps();
+        }
+      }, 100);
+      return;
+    }
+    try {
+      const isDark = document.body.classList.contains('dark');
+      const mapStyle = isDark ? API_CONFIG.amap.styles.dark : API_CONFIG.amap.styles.light;
+      trainMap = new AMap.Map('trainMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false, mapStyle });
+      planeMap = new AMap.Map('planeMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false, mapStyle });
+      combinedMap = new AMap.Map('combinedMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false, mapStyle });
+      console.log('✅ 高德地图初始化成功');
+    } catch (e) {
+      console.error('❌ 高德地图初始化失败:', e);
+    }
+  } else if (currentMapType === 'google') {
+    if (!window.google || !window.google.maps) {
+      console.warn('谷歌地图 API 未加载');
+      alert('谷歌地图API未加载或API密钥无效。\n将使用高德地图代替。');
+      currentMapType = 'amap';
+      localStorage.setItem('currentMapType', 'amap');
+      const sel = document.getElementById('mapSelect');
+      if (sel) sel.value = 'amap';
+      initMaps();
+      return;
+    }
+    try {
+      const isDark = document.body.classList.contains('dark');
+      const options = { ...API_CONFIG.getGoogleMapOptions(isDark), zoom: 4, center: { lat: 35, lng: 105 } };
+      trainMap = new google.maps.Map(document.getElementById('trainMap'), options);
+      planeMap = new google.maps.Map(document.getElementById('planeMap'), options);
+      combinedMap = new google.maps.Map(document.getElementById('combinedMap'), options);
+      console.log('✅ 谷歌地图初始化成功');
+    } catch (e) {
+      console.error('❌ 谷歌地图初始化失败:', e);
+    }
+  } else if (currentMapType === 'leaflet') {
+    try {
+      const isDark = document.body.classList.contains('dark');
+      trainMap = L.map('trainMap', { center: [35, 105], zoom: 4, scrollWheelZoom: false });
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 20
+      }).addTo(trainMap);
+      if (isDark) trainMap.getContainer().style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)';
+
+      planeMap = L.map('planeMap', { center: [35, 105], zoom: 4, scrollWheelZoom: false });
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 20
+      }).addTo(planeMap);
+      if (isDark) planeMap.getContainer().style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)';
+
+      combinedMap = L.map('combinedMap', { center: [35, 105], zoom: 4, scrollWheelZoom: false });
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 20
+      }).addTo(combinedMap);
+      if (isDark) combinedMap.getContainer().style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)';
+
+      console.log('✅ Leaflet地图初始化成功');
+    } catch (e) {
+      console.error('❌ Leaflet地图初始化失败:', e);
+    }
   }
   drawExisting();
 }
@@ -156,58 +241,37 @@ function initMaps() {
 function drawExisting() {
   const { trains, planes } = loadRecords();
 
-  // 为单独的地图绘制
-  const drawSet = [
-    { map: trainMap, arr: trains, color: '#ff6b6b' },
-    { map: planeMap, arr: planes, color: '#4dabf7' }
-  ];
-
-  drawSet.forEach(cfg => {
-    if (!cfg.map) return;
-    cfg.arr.forEach(r => {
+  const drawOnMap = (map, records, color) => {
+    if (!map) return;
+    records.forEach(r => {
       if (Array.isArray(r.pathWGS) && r.pathWGS.length) {
         try {
-          const path = r.pathWGS.map(p => [p[0], p[1]]); // WGS: [lon, lat]
-          const poly = new AMap.Polyline({ path, strokeColor: cfg.color, strokeOpacity: 0.85, strokeWeight: 2 });
-          cfg.map.add(poly);
-        } catch (e) { }
+          if (currentMapType === 'amap') {
+            const path = r.pathWGS.map(p => [p[0], p[1]]);
+            const poly = new AMap.Polyline({ path, strokeColor: color, strokeOpacity: 0.85, strokeWeight: 2 });
+            map.add(poly);
+          } else if (currentMapType === 'google') {
+            const path = r.pathWGS.map(p => ({ lat: p[1], lng: p[0] }));
+            const poly = new google.maps.Polyline({ path, strokeColor: color, strokeOpacity: 0.85, strokeWeight: 2 });
+            poly.setMap(map);
+          } else if (currentMapType === 'leaflet') {
+            const path = r.pathWGS.map(p => [p[1], p[0]]);
+            const poly = L.polyline(path, { color, opacity: 0.85, weight: 2 });
+            poly.addTo(map);
+          }
+        } catch (e) { console.warn('绘制失败:', e); }
       }
     });
-  });
+  };
 
-  // 为合并地图绘制（火车用红色，飞机用蓝色）
+  // Draw on individual maps
+  drawOnMap(trainMap, trains, '#ff6b6b');
+  drawOnMap(planeMap, planes, '#4dabf7');
+
+  // Draw on combined map
   if (combinedMap) {
-    // 绘制火车线路（红色）
-    trains.forEach(r => {
-      if (Array.isArray(r.pathWGS) && r.pathWGS.length) {
-        try {
-          const path = r.pathWGS.map(p => [p[0], p[1]]);
-          const poly = new AMap.Polyline({
-            path,
-            strokeColor: '#ff6b6b',  // 红色 - 火车
-            strokeOpacity: 0.7,
-            strokeWeight: 2
-          });
-          combinedMap.add(poly);
-        } catch (e) { }
-      }
-    });
-
-    // 绘制飞机线路（蓝色）
-    planes.forEach(r => {
-      if (Array.isArray(r.pathWGS) && r.pathWGS.length) {
-        try {
-          const path = r.pathWGS.map(p => [p[0], p[1]]);
-          const poly = new AMap.Polyline({
-            path,
-            strokeColor: '#4dabf7',  // 蓝色 - 飞机
-            strokeOpacity: 0.7,
-            strokeWeight: 2
-          });
-          combinedMap.add(poly);
-        } catch (e) { }
-      }
-    });
+    drawOnMap(combinedMap, trains, '#ff6b6b');
+    drawOnMap(combinedMap, planes, '#4dabf7');
   }
 
   $('statusPill').textContent = '已加载';
@@ -235,16 +299,37 @@ window.addEventListener('storage', (e) => {
 window.addEventListener('DOMContentLoaded', () => {
   const savedTheme = localStorage.getItem('theme');
   if (savedTheme === 'dark') document.body.classList.add('dark');
+
+  // Read map type from localStorage
+  const savedMapType = localStorage.getItem('currentMapType');
+  if (savedMapType && ['amap', 'google', 'leaflet'].includes(savedMapType)) {
+    currentMapType = savedMapType;
+  }
+
   applyThemeUI();
   loadUsername();
   updateSummary();
   initMaps();
+
+  // Map selector event listener
+  const mapSelect = document.getElementById('mapSelect');
+  if (mapSelect) {
+    mapSelect.addEventListener('change', (e) => {
+      const newType = e.target.value;
+      currentMapType = newType;
+      localStorage.setItem('currentMapType', newType);
+      console.log(`切换地图类型: ${newType}`);
+      initMaps();
+    });
+  }
+
   // 用户名功能移除，无需监听保存
   $('refreshBtn').addEventListener('click', () => { updateSummary(); initMaps(); });
   $('clearCacheBtn').addEventListener('click', () => {
     if (confirm('确定仅清除地理编码缓存(不会删除行程记录)？')) { localStorage.removeItem(GEOCODE_CACHE_KEY); $('statusPill').textContent = '已清空地理编码缓存'; }
   });
   $('toggleThemeBtn').addEventListener('click', toggleTheme);
+
   // 备份全部
   $('backupAllBtn').addEventListener('click', () => {
     if (!confirm('备份包含：火车+飞机全部记录(含已缓存路径) + 地理编码缓存 + 当前主题。继续？')) return;

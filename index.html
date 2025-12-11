@@ -61,6 +61,9 @@
   </style>
   <title>出行首页概览</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Leaflet for OSM support -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- 引入 API 配置文件 -->
   <script src="js/config.js"></script>
   <!-- 动态加载地图 API -->
@@ -109,6 +112,20 @@
         <button id="toggleThemeBtn" style="flex:1;">暗色模式</button>
         <a href="app.html" class="nav-link" style="flex:1;">进入管理页面 ➜</a>
       </div>
+      <select id="mapSelect"
+        style="width:100%; padding:8px; margin-bottom:10px; border-radius:4px; border:1px solid var(--border); background:var(--panel); color:var(--text); font-size:13px;">
+        <option value="amap">🗺️ 高德地图 (Amap)</option>
+        <option value="google">🗺️ 谷歌地图 (Google)</option>
+        <option value="leaflet">🗺️ CartoDB (OpenStreetMap)</option>
+      </select>
+      <script>
+        // 立即初始化地图选择器值
+        (function () {
+          const savedMap = localStorage.getItem('currentMapType') || 'amap';
+          const sel = document.getElementById('mapSelect');
+          if (sel) sel.value = savedMap;
+        })();
+      </script>
       <p style="margin:0; font-size:11px; line-height:1.5; opacity:.7;">展示火车与飞机行程的总体里程与数量概览，支持一键数据备份 / 恢复。</p>
     </div>
     <div class="card">

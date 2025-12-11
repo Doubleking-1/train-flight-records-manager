@@ -34,6 +34,9 @@
   </div>
 
   <script src="js/config.js"></script>
+  <!-- Leaflet CSS & JS (for OpenStreetMap) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- 动态加载 API 和外部库 -->
   <script>
     // 提前占位，避免 Google 回调到未定义函数导致 InvalidValueError
@@ -106,7 +109,21 @@
   <!-- Sidebar: Form + Theme Toggle -->
   <div id="sidebar">
     <button id="themeToggle">切换暗色模式</button>
-    <button id="mapToggle">🗺️ 切换到谷歌地图</button>
+
+    <select id="mapSelect"
+      style="width:100%; padding:8px; margin-bottom:10px; border-radius:4px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color);">
+      <option value="amap">🗺️ 高德地图 (Amap)</option>
+      <option value="google">🗺️ 谷歌地图 (Google)</option>
+      <option value="leaflet">🗺️ CartoDB (OpenStreetMap)</option>
+    </select>
+    <script>
+      // Initialize mapSelect value immediately to prevent flash
+      (function () {
+        const savedMap = localStorage.getItem('currentMapType') || 'amap';
+        const sel = document.getElementById('mapSelect');
+        if (sel) sel.value = savedMap;
+      })();
+    </script>
     <h2 id="sectionTitle" style="margin-top:10px;">火车票记录</h2>
 
     <!-- 分组：地图线路 & 动画 -->
@@ -209,6 +226,17 @@
 
   <!-- Main Area: Summary + Map + Table -->
   <div id="main">
+    <div id="container">
+      <!-- 地图容器 -->
+      <div id="mapContainer"></div>
+      <!-- 地点标记按钮已移除 -->
+      <!-- 年份图例在地图右下角 -->
+      <div id="yearLegend">
+        <h4>年份图例</h4>
+        <div id="legendContent"></div>
+      </div>
+    </div>
+
     <!-- 总结面板 -->
     <div id="summaryPanel">
       <div class="summary-tabs">
@@ -284,16 +312,7 @@
       </div>
     </div>
 
-    <div id="container">
-      <!-- 地图容器 -->
-      <div id="mapContainer"></div>
-      <!-- 地点标记按钮已移除 -->
-      <!-- 年份图例在地图右下角 -->
-      <div id="yearLegend">
-        <h4>年份图例</h4>
-        <div id="legendContent"></div>
-      </div>
-    </div>
+    <!-- Map container moved to top -->
 
     <!-- 动画回放地图遮罩 -->
     <div id="replayOverlay"

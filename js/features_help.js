@@ -1,11 +1,11 @@
 // features_help.js - 共享的功能说明内容
 
 function getFeaturesHelpContent() {
-    return `
+  return `
     <li><strong>基础功能</strong>
       <ul>
         <li><strong>模式切换</strong>：支持 🚆 火车 / ✈️ 飞机 双模式，数据独立存储，切换不丢失。</li>
-        <li><strong>地图切换</strong>：支持高德地图 / Google Maps，自动重绘现有路线。</li>
+        <li><strong>地图切换</strong>：支持高德地图 / Google Maps / OpenStreetMap (CartoDB)，自动重绘现有路线。<strong>首页和管理页面地图选择自动同步</strong>，切换一处两处同步。</li>
         <li><strong>暗色模式</strong>：全站适配深色主题，保护视力。</li>
         <li><strong>行内编辑</strong>：点击表格内容直接修改，支持插入和删除行。</li>
         <li><strong>列排序</strong>：点击表头排序，支持日期、时间、车次/航班号、站点、城市、费用、里程等多列。</li>
@@ -16,8 +16,8 @@ function getFeaturesHelpContent() {
     <li><strong>地图与动画</strong>
       <ul>
         <li><strong>路线绘制</strong>：自动计算起终点坐标并绘制弧线；支持路径缓存，避免重复请求。</li>
-        <li><strong>动画回放</strong>：支持按时间顺序回放轨迹；支持 🚆 火车(红) / ✈️ 飞机(蓝) / 🌍 全部 混合回放。</li>
-        <li><strong>回放模式</strong>：支持"全部年份"、"逐年播放"和"指定年份"；实时显示累计里程。</li>
+        <li><strong>动画回放</strong>：支持按时间顺序回放轨迹；支持 🚆 火车(红) / ✈️ 飞机(蓝) / 🌍 全部 混合回放；<strong>回放地图类型与主页面自动同步</strong>。</li>
+        <li><strong>回放模式</strong>：支持"全部年份"、"逐年播放"和"指定年份"；实时显示累计里程；<strong>关闭回放自动重置</strong>。</li>
         <li><strong>交互图例</strong>：右下角图例可筛选特定年份的线路显隐。</li>
       </ul>
     </li>
@@ -62,19 +62,19 @@ function getFeaturesHelpContent() {
 
 // 初始化功能说明模态框
 function initFeaturesHelp() {
-    const modalContent = document.querySelector('#featuresHelpModal');
-    if (modalContent) {
-        // 找到 h3 标签后面插入内容
-        const h3 = modalContent.querySelector('h3');
-        if (h3) {
-            h3.insertAdjacentHTML('afterend', getFeaturesHelpContent());
-        }
+  const modalContent = document.querySelector('#featuresHelpModal');
+  if (modalContent) {
+    // 找到 h3 标签后面插入内容
+    const h3 = modalContent.querySelector('h3');
+    if (h3) {
+      h3.insertAdjacentHTML('afterend', getFeaturesHelpContent());
     }
+  }
 }
 
 // 页面加载完成后初始化
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initFeaturesHelp);
+  document.addEventListener('DOMContentLoaded', initFeaturesHelp);
 } else {
-    initFeaturesHelp();
+  initFeaturesHelp();
 }

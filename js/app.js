@@ -12,9 +12,10 @@ let insertionTarget = null;
 let currentMode = 'add'; // 'add' | 'modify' | 'insert'
 const counts = {}; // For offsetting duplicate paths
 let map; // 当前地图实例
-let currentMapType = 'amap'; // 'amap' | 'google'
+let currentMapType = 'amap'; // 'amap' | 'google' | 'leaflet'
 let googleMap; // 谷歌地图实例
 let amapInstance; // 高德地图实例
+let leafletMap; // Leaflet 地图实例
 let googleMapsLoaded = false; // 谷歌地图API加载状态
 let selectedYears = new Set(); // 选中的年份集合
 let isUserDeselectedAll = false; // 用户是否主动执行了"全不选"
@@ -48,7 +49,7 @@ const COL = {
 
 // --- UI Elements ---
 const themeToggle = document.getElementById('themeToggle');
-const mapToggle = document.getElementById('mapToggle');
+const mapSelect = document.getElementById('mapSelect');
 const sidebarToggleBtn = document.getElementById('sidebarToggleBtn');
 const modeIndicator = document.getElementById('modeIndicator');
 const addBtn = document.getElementById('addRecordBtn');
@@ -201,16 +202,16 @@ function checkGoogleMapsAPI() {
     googleMapsLoaded = true;
     console.log('✅ 谷歌地图API已加载');
     // 更新按钮状态，如果当前是高德地图，启用切换功能
-    if (currentMapType === 'amap') {
-      mapToggle.disabled = false;
-      mapToggle.style.opacity = '1';
+    if (currentMapType === 'amap' && mapSelect) {
+      mapSelect.disabled = false;
+      mapSelect.style.opacity = '1';
     }
   } else {
     console.log('⏳ 等待谷歌地图API加载...');
     // 如果API未加载，禁用切换到谷歌地图的功能
-    if (currentMapType === 'amap') {
-      mapToggle.style.opacity = '0.6';
-      mapToggle.title = '谷歌地图API正在加载中...';
+    if (currentMapType === 'amap' && mapSelect) {
+      // 可以在这里做一些提示，例如暂时禁用 Google 选项
+      // mapSelect.querySelector('option[value="google"]').disabled = true;
     }
     setTimeout(checkGoogleMapsAPI, 1000);
   }
@@ -257,6 +258,40 @@ function initAmapMap() {
   });
 }
 
+// 初始化 Leaflet 地图 (OSM)
+function initLeafletMap() {
+  console.log('初始化 Leaflet 地图...');
+  // 移除旧容器内容 (如果需要)
+  const container = document.getElementById('mapContainer');
+  // 注意：Leaflet要求容器非空但我们通常是复用mapContainer
+  // 并且Leaflet会自动处理
+
+  // 需要手动销毁之前的实例如果存在 (虽switchMapType已清理)
+  if (leafletMap) {
+    leafletMap.remove();
+    leafletMap = null;
+  }
+
+  // 默认中心：西安
+  const map = L.map('mapContainer', {
+    center: [34.205, 106.712],
+    zoom: 5,
+    scrollWheelZoom: false // 默认禁止滚轮缩放
+  });
+
+  // 使用 CartoDB Positron (简舒) 切片，界面更干净，减少边界线干扰
+  // 浅色模式: CartoDB Positron
+  // 深色模式在 updateMapTheme 中通过 CSS filter 处理，或者也可以切换到 CartoDB Dark Matter
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 20
+  }).addTo(map);
+
+  return map;
+}
+
 // 切换布局后刷新地图尺寸
 function refreshMapAfterLayoutChange() {
   try {
@@ -282,10 +317,10 @@ function refreshMapAfterLayoutChange() {
 }
 
 // 切换地图类型
-function switchMapType() {
+function switchMapType(targetType) {
   console.log(`开始切换地图: 当前 ${currentMapType}`);
 
-  const newMapType = currentMapType === 'amap' ? 'google' : 'amap';
+  const newMapType = targetType || 'amap';
   console.log(`目标地图类型: ${newMapType}`);
 
   // 清除当前地图的所有覆盖物
@@ -305,6 +340,11 @@ function switchMapType() {
       center = { lat: googleCenter.lat(), lng: googleCenter.lng() };
       zoom = googleMap.getZoom();
       console.log(`保存谷歌地图状态: 中心点 [${center.lat}, ${center.lng}], 缩放 ${zoom}`);
+    } else if (currentMapType === 'leaflet' && leafletMap) {
+      const lCenter = leafletMap.getCenter();
+      center = { lat: lCenter.lat, lng: lCenter.lng };
+      zoom = leafletMap.getZoom();
+      console.log(`保存Leaflet地图状态: 中心点 [${center.lat}, ${center.lng}], 缩放 ${zoom}`);
     }
   } catch (error) {
     console.warn('保存地图状态失败:', error);
@@ -325,6 +365,14 @@ function switchMapType() {
       // 只清空地图容器，保留按钮和图例
       document.getElementById('mapContainer').innerHTML = '';
     }
+    if (currentMapType === 'leaflet' && leafletMap) {
+      console.log('销毁Leaflet地图...');
+      // 必须清除 CSS Filter，否则会遗留给下一个地图（导致高德变灰）
+      try { leafletMap.getContainer().style.filter = 'none'; } catch (e) { }
+      leafletMap.remove();
+      leafletMap = null;
+      document.getElementById('mapContainer').innerHTML = ''; // 清理额外的 DOM 元素
+    }
   } catch (error) {
     console.warn('销毁地图失败:', error);
   }
@@ -342,16 +390,39 @@ function switchMapType() {
         googleMap.setZoom(zoom || 5);
       }
       map = googleMap;
-      mapToggle.textContent = '🗺️ 切换到高德地图';
+      if (center) {
+        googleMap.setCenter(center);
+        googleMap.setZoom(zoom || 5);
+      }
+      map = googleMap;
+      // mapToggle text update removed
       console.log('谷歌地图初始化成功');
     } else {
-      console.error('谷歌地图初始化失败，回退到高德地图');
-      // 回退到高德地图
+      console.error('谷歌地图初始化失败，尝试切换到 OSM');
+      // 失败则尝试 OSM
+      switchMapType('leaflet');
+      if (mapSelect) mapSelect.value = 'leaflet';
+    }
+  } else if (newMapType === 'leaflet') {
+    console.log('初始化 Leaflet 地图...');
+    try {
+      leafletMap = initLeafletMap();
+      if (leafletMap && center) {
+        leafletMap.setView([center.lat, center.lng], zoom || 5);
+      }
+      map = leafletMap;
+      // mapToggle text update removed
+      console.log('Leaflet 地图初始化成功');
+      // 立即应用主题（修复：首次切换时若是暗色模式，需立即应用 Filter）
+      updateMapTheme();
+    } catch (e) {
+      console.error('Leaflet 地图初始化失败:', e);
+      // 回退到高德
       currentMapType = 'amap';
       amapInstance = initAmapMap();
       map = amapInstance;
-      mapToggle.textContent = '🗺️ 切换到谷歌地图';
-      alert('谷歌地图初始化失败，已回退到高德地图');
+      // mapToggle text update removed
+      if (mapSelect) mapSelect.value = 'amap';
     }
   } else {
     console.log('初始化高德地图...');
@@ -361,7 +432,7 @@ function switchMapType() {
       amapInstance.setZoom(zoom || 5);
     }
     map = amapInstance;
-    mapToggle.textContent = '🗺️ 切换到谷歌地图';
+    // mapToggle text update removed
     console.log('高德地图初始化成功');
   }
 
@@ -391,6 +462,10 @@ function clearAllPaths() {
           }
         } else if (currentMapType === 'google') {
           if (overlay.setMap) overlay.setMap(null);
+        } else if (currentMapType === 'leaflet') {
+          // Leaflet clean up
+          if (overlay.remove) overlay.remove();
+          if (leafletMap && leafletMap.removeLayer) leafletMap.removeLayer(overlay);
         }
       });
       tr._overlays = [];
@@ -430,6 +505,14 @@ function updateMapTheme() {
       }, 500);
     } catch (error) {
       console.error('更新Google Maps主题失败:', error);
+    }
+  } else if (currentMapType === 'leaflet' && leafletMap) {
+    // Leaflet 简易暗黑模式：给容器加 CSS Filter
+    const container = leafletMap.getContainer();
+    if (isDark) {
+      container.style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)';
+    } else {
+      container.style.filter = 'none';
     }
   }
   // Handle Replay Map
@@ -542,6 +625,8 @@ function rerenderTable(filterYear = null) {
               }
             } else if (currentMapType === 'google') {
               if (o.setMap) o.setMap(null);
+            } else if (currentMapType === 'leaflet') {
+              if (o.remove) o.remove();
             }
           } catch { }
         });
@@ -1410,6 +1495,18 @@ function updatePathVisibility() {
             // 谷歌地图的年份标签（Marker）
             overlay.setVisible(shouldShow);
           }
+        } else if (currentMapType === 'leaflet') {
+          // Leaflet: setStyle (path) or setOpacity (marker)
+          if (overlay instanceof L.Polyline) {
+            overlay.setStyle({
+              opacity: shouldShow ? 0.9 : 0,
+              interactive: shouldShow // 隐藏时不响应交互
+            });
+            // 如果不想让它挡住别的，还需要 bringToBack/Front
+            if (shouldShow) overlay.bringToFront(); else overlay.bringToBack();
+          } else if (overlay instanceof L.Marker) { // 我们的文字标签用Marker divIcon
+            overlay.setOpacity(shouldShow ? 1 : 0);
+          }
         }
       });
     }
@@ -1593,7 +1690,7 @@ function createYearlyCharts(mode = 'yearly', selectedYear = null) {
 }
 
 // Create bureau statistics chart
-function createBureauChart() {
+function createBureauChart(selectedYear = null) {
   if (records.length === 0) {
     if (bureauChart) bureauChart.destroy();
     return;
@@ -1606,12 +1703,17 @@ function createBureauChart() {
     titleElement.textContent = currentEntity === 'plane' ? '航空公司统计' : '铁路局统计';
   }
 
+  // Filter records by year if selectedYear is provided
+  const filteredRecords = selectedYear
+    ? records.filter(r => r.date && r.date.substring(0, 4) === selectedYear)
+    : records;
+
   // Aggregate by appropriate field based on entity type
   // For trains: bureau field = railway bureau (铁路局)
   // For planes: trainType field = airline (航空公司), bureau field = aircraft type (机型)
   const fieldName = currentEntity === 'plane' ? 'trainType' : 'bureau';
   const bureauData = {};
-  records.forEach(record => {
+  filteredRecords.forEach(record => {
     const value = record[fieldName] || '未知';
     if (!bureauData[value]) {
       bureauData[value] = 0;
@@ -1696,7 +1798,7 @@ function createBureauChart() {
 }
 
 // Create type statistics chart (train type for trains, aircraft type for planes)
-function createTypeChart() {
+function createTypeChart(selectedYear = null) {
   if (records.length === 0) {
     if (typeChart) typeChart.destroy();
     return;
@@ -1708,12 +1810,17 @@ function createTypeChart() {
     titleElement.textContent = currentEntity === 'plane' ? '机型统计' : '车型统计';
   }
 
+  // Filter records by year if selectedYear is provided
+  const filteredRecords = selectedYear
+    ? records.filter(r => r.date && r.date.substring(0, 4) === selectedYear)
+    : records;
+
   // Aggregate by appropriate field based on entity type
   // For trains: trainType field = train type (车型号)
   // For planes: bureau field = aircraft type (机型)
   const fieldName = currentEntity === 'plane' ? 'bureau' : 'trainType';
   const typeData = {};
-  records.forEach(record => {
+  filteredRecords.forEach(record => {
     const value = record[fieldName] || '未知';
     if (!typeData[value]) {
       typeData[value] = 0;
@@ -1919,6 +2026,11 @@ function attachRowEvents(tr) {
             if (o.setOptions) o.setOptions({ strokeWeight: 5, zIndex: 100 });
           } else if (currentMapType === 'google') {
             if (o.setOptions) o.setOptions({ strokeWeight: 5, zIndex: 100 });
+          } else if (currentMapType === 'leaflet') {
+            if (o instanceof L.Polyline) {
+              o.setStyle({ weight: 5 });
+              o.bringToFront();
+            }
           }
         } catch { }
       });
@@ -1933,6 +2045,10 @@ function attachRowEvents(tr) {
             if (o.setOptions) o.setOptions({ strokeWeight: 2, zIndex: 50 });
           } else if (currentMapType === 'google') {
             if (o.setOptions) o.setOptions({ strokeWeight: 2, zIndex: 50 });
+          } else if (currentMapType === 'leaflet') {
+            if (o instanceof L.Polyline) {
+              o.setStyle({ weight: 2 });
+            }
           }
         } catch { }
       });
@@ -1954,6 +2070,8 @@ function attachRowEvents(tr) {
                 if (amapInstance && amapInstance.remove) amapInstance.remove(o);
               } else if (currentMapType === 'google') {
                 if (o.setMap) o.setMap(null);
+              } else if (currentMapType === 'leaflet') {
+                if (o.remove) o.remove();
               }
             } catch { }
           });
@@ -2019,6 +2137,8 @@ function attachRowEvents(tr) {
                 if (amapInstance && amapInstance.remove) amapInstance.remove(o);
               } else if (currentMapType === 'google') {
                 if (o.setMap) o.setMap(null);
+              } else if (currentMapType === 'leaflet') {
+                if (o.remove) o.remove();
               }
             } catch { }
           });
@@ -2243,6 +2363,8 @@ function saveInlineEdit(tr) {
             if (amapInstance && amapInstance.remove) amapInstance.remove(o);
           } else if (currentMapType === 'google') {
             if (o.setMap) o.setMap(null);
+          } else if (currentMapType === 'leaflet') {
+            if (o.remove) o.remove();
           }
         } catch { }
       });
@@ -2484,6 +2606,31 @@ async function drawPath(tr, record) {
         });
 
         polyline.setMap(googleMap); overlays.push(polyline);
+      } else if (currentMapType === 'leaflet') {
+        // 使用 Leaflet 绘制已存路径
+        const latLngs = record.pathWGS.map(p => [p[1], p[0]]); // Leaflet uses [lat, lon]
+        const polyline = L.polyline(latLngs, {
+          color: strokeColor,
+          weight: 2,
+          opacity: 0.9,
+          smoothFactor: 1
+        }).addTo(leafletMap);
+
+        polyline.on('mouseover', () => {
+          polyline.setStyle({ weight: 5 });
+          polyline.bringToFront();
+          tr.classList.add('highlight-row');
+        });
+        polyline.on('mouseout', () => {
+          polyline.setStyle({ weight: 2 });
+          tr.classList.remove('highlight-row');
+        });
+        polyline.on('click', () => {
+          tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          tr.classList.add('highlight-row');
+          setTimeout(() => tr.classList.remove('highlight-row'), 1500);
+        });
+        overlays.push(polyline);
       }
       tr._overlays = overlays;
       const shouldShow = isUserDeselectedAll ? false : (selectedYears.size === 0 || selectedYears.has(year));
@@ -2539,6 +2686,22 @@ async function drawPath(tr, record) {
       const googlePath = wgsPath.map(p => ({ lat: p[1], lng: p[0] }));
       const polyline = new google.maps.Polyline({ path: googlePath, geodesic: false, strokeColor, strokeOpacity: 0.9, strokeWeight: 2 });
       polyline.setMap(googleMap); overlays.push(polyline);
+    } else if (currentMapType === 'leaflet') {
+      // Leaflet 绘制新路径
+      const latLngs = wgsPath.map(p => [p[1], p[0]]);
+      const polyline = L.polyline(latLngs, {
+        color: strokeColor,
+        weight: 2,
+        opacity: 0.9,
+        smoothFactor: 1
+      }).addTo(leafletMap);
+
+      // Bind Interactions
+      polyline.on('mouseover', () => { polyline.setStyle({ weight: 5 }); polyline.bringToFront(); tr.classList.add('highlight-row'); });
+      polyline.on('mouseout', () => { polyline.setStyle({ weight: 2 }); tr.classList.remove('highlight-row'); });
+      polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 1500); });
+
+      overlays.push(polyline);
     }
     tr._overlays = overlays;
     const shouldShow = isUserDeselectedAll ? false : (selectedYears.size === 0 || selectedYears.has(year));
@@ -2711,6 +2874,8 @@ async function redrawAllPaths(force = false) {
               if (amapInstance && amapInstance.remove) { try { amapInstance.remove(o); } catch (e) { } }
             } else if (currentMapType === 'google') {
               if (o.setMap) o.setMap(null);
+            } else if (currentMapType === 'leaflet') {
+              if (o.remove) o.remove();
             }
           } catch { }
         });
@@ -2816,6 +2981,14 @@ function reloadForEntity(entity) {
       map = googleMap;
       if (googleMap && center) { googleMap.setCenter(center); }
       if (googleMap && zoom) { googleMap.setZoom(zoom); }
+    } else if (currentMapType === 'leaflet') {
+      if (leafletMap) { leafletMap.remove(); leafletMap = null; }
+      document.getElementById('mapContainer').innerHTML = '';
+      leafletMap = initLeafletMap();
+      map = leafletMap;
+      if (center) leafletMap.setView([center.lat, center.lng], zoom || 5);
+      // Sync theme
+      updateMapTheme();
     }
   } catch (e) { console.warn('重建地图失败:', e); }
   // 重置年份选择状态，避免跨模式残留
@@ -2895,18 +3068,25 @@ modeTrainBtn.addEventListener('click', () => reloadForEntity('train'));
 modePlaneBtn.addEventListener('click', () => reloadForEntity('plane'));
 
 // Map toggle listener
-mapToggle.addEventListener('click', () => {
-  console.log(`点击地图切换按钮: ${currentMapType} → ${currentMapType === 'amap' ? 'google' : 'amap'}`);
+// Map select listener
+mapSelect.addEventListener('change', (e) => {
+  const targetType = e.target.value;
+  console.log(`地图切换: ${currentMapType} → ${targetType}`);
 
   // 如果要切换到谷歌地图，先检查API是否已加载
-  if (currentMapType === 'amap' && !googleMapsLoaded) {
-    console.warn('谷歌地图API尚未加载完成');
-    alert('谷歌地图API正在加载中，请稍后重试...\n\n提示：如果长时间未加载，请检查：\n1. 网络连接\n2. API密钥是否正确\n3. 是否启用了相关API服务');
+  if (targetType === 'google' && !googleMapsLoaded) {
+    console.warn('谷歌地图API尚未加载完成，跳过直接切换到 OSM');
+    // 自动切到 Leaflet
+    if (mapSelect) mapSelect.value = 'leaflet';
+    switchMapType('leaflet');
     return;
   }
 
-  switchMapType();
+  switchMapType(targetType);
 });
+
+// Set initial selection
+if (mapSelect) mapSelect.value = currentMapType;
 
 // 已移除地点标记按钮与监听器
 
@@ -2933,6 +3113,8 @@ document.querySelectorAll('.summary-tab').forEach(tab => {
         // 然后更新图表、统计和表格
         updateYearlySummary(selectedYear); // 刷新年度统计面板以绑定最新的点击事件
         createYearlyCharts('monthly', selectedYear);
+        createBureauChart(selectedYear);
+        createTypeChart(selectedYear);
         updateRouteHeatmap(selectedYear);
         updateRegionStats(selectedYear);
         rerenderTable(selectedYear);
@@ -2953,6 +3135,8 @@ document.querySelectorAll('.summary-tab').forEach(tab => {
       // 然后更新图表、统计和表格
       updateAllTimeSummary(); // 刷新历史统计面板以绑定最新的点击事件
       createYearlyCharts('yearly');
+      createBureauChart();
+      createTypeChart();
       updateRouteHeatmap();
       updateRegionStats();
       rerenderTable();
@@ -2975,6 +3159,8 @@ yearSelect.addEventListener('change', (e) => {
 
     // 然后更新图表、统计和表格
     createYearlyCharts('monthly', selectedYear);
+    createBureauChart(selectedYear);
+    createTypeChart(selectedYear);
     updateRouteHeatmap(selectedYear);
     updateRegionStats(selectedYear);
     rerenderTable(selectedYear);
@@ -3066,11 +3252,39 @@ const replayWidthValue = document.getElementById('replayWidthValue');
 function initReplayMap() {
   if (replayMapInstance) return;
   const isDark = document.body.classList.contains('dark');
+  const replayMapDiv = document.getElementById('replayMap');
+
   if (currentMapType === 'amap') {
     replayMapInstance = new AMap.Map('replayMap', { viewMode: '2D', zoom: 4, center: [105, 35] });
     try { replayMapInstance.setMapStyle(isDark ? DARK_MAP_STYLE : LIGHT_MAP_STYLE); } catch (e) { }
-    const styles = API_CONFIG.getGoogleMapOptions(isDark).styles;
-    replayMapInstance = new google.maps.Map(replayMapDiv, { zoom: 4, center: { lat: 35, lng: 105 }, mapTypeId: google.maps.MapTypeId.ROADMAP, styles: styles });
+  } else if (currentMapType === 'google') {
+    // Check if Google Maps API is available
+    if (!window.google || !window.google.maps) {
+      console.warn('谷歌地图API未加载，无法在回放中使用谷歌地图');
+      alert('谷歌地图API未加载或API密钥无效。\n回放将使用高德地图代替。');
+      // Fallback to AMap
+      replayMapInstance = new AMap.Map('replayMap', { viewMode: '2D', zoom: 4, center: [105, 35] });
+      try { replayMapInstance.setMapStyle(isDark ? DARK_MAP_STYLE : LIGHT_MAP_STYLE); } catch (e) { }
+    } else {
+      const styles = API_CONFIG.getGoogleMapOptions(isDark).styles;
+      replayMapInstance = new google.maps.Map(replayMapDiv, { zoom: 4, center: { lat: 35, lng: 105 }, mapTypeId: google.maps.MapTypeId.ROADMAP, styles: styles });
+    }
+  } else if (currentMapType === 'leaflet') {
+    replayMapInstance = L.map('replayMap', {
+      center: [35, 105],
+      zoom: 4,
+      scrollWheelZoom: false
+    });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 20
+    }).addTo(replayMapInstance);
+
+    // Apply dark mode filter if needed
+    if (isDark) {
+      try { replayMapInstance.getContainer().style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)'; } catch (e) { }
+    }
   }
 }
 
@@ -3211,7 +3425,12 @@ function animatePolyline(polyline, fullPath, onComplete) {
           currentPath.push(fullPath[pointIndex]);
           polyline.setPath(currentPath);
         } else if (currentMapType === 'google') {
-          polyline.getPath().push(fullPath[pointIndex]);
+          const currentPath = polyline.getPath();
+          currentPath.push(fullPath[pointIndex]);
+        } else if (currentMapType === 'leaflet') {
+          const currentPath = polyline.getLatLngs();
+          currentPath.push(fullPath[pointIndex]);
+          polyline.setLatLngs(currentPath);
         }
         pointIndex++;
       }
@@ -3302,6 +3521,8 @@ function drawReplayOne() {
         } else if (currentMapType === 'google' && replayMapInstance) {
           replayMapInstance.setZoom(6);
           replayMapInstance.setCenter({ lat: mid[1], lng: mid[0] });
+        } else if (currentMapType === 'leaflet' && replayMapInstance) {
+          replayMapInstance.setView([mid[1], mid[0]], 6);
         }
       } catch (e) { }
     });
@@ -3313,7 +3534,8 @@ function drawReplayOne() {
   // Cleanup partial polyline if re-entering same index (e.g. restart after pause)
   if (replayPolylines[replayIndex]) {
     if (currentMapType === 'amap') replayPolylines[replayIndex].setMap(null);
-    else replayPolylines[replayIndex].setMap(null);
+    else if (currentMapType === 'google') replayPolylines[replayIndex].setMap(null);
+    else if (currentMapType === 'leaflet' && replayMapInstance) replayPolylines[replayIndex].remove();
     replayPolylines[replayIndex] = null;
   }
 
@@ -3343,6 +3565,18 @@ function drawReplayOne() {
       // Start with empty path
       polyline = new google.maps.Polyline({ path: [], geodesic: false, strokeColor, strokeOpacity: 0.9, strokeWeight: lineWidth });
       polyline.setMap(replayMapInstance);
+
+      if (replayPolylines.length <= replayIndex) replayPolylines.push(polyline);
+      else replayPolylines[replayIndex] = polyline;
+    } else if (currentMapType === 'leaflet') {
+      const leafletPath = rec.pathWGS.map(p => [p[1], p[0]]);
+      fullPath = leafletPath;
+      // Start with empty path
+      polyline = L.polyline([], {
+        color: strokeColor,
+        weight: lineWidth,
+        opacity: 0.9
+      }).addTo(replayMapInstance);
 
       if (replayPolylines.length <= replayIndex) replayPolylines.push(polyline);
       else replayPolylines[replayIndex] = polyline;
@@ -3423,6 +3657,12 @@ function clearReplayMapOnly() {
         if (polyline && polyline.setMap) polyline.setMap(null);
       });
       replayPolylines = [];
+    } else if (currentMapType === 'leaflet' && replayMapInstance) {
+      // Remove only the polylines
+      replayPolylines.forEach(polyline => {
+        if (polyline && polyline.remove) polyline.remove();
+      });
+      replayPolylines = [];
     }
   } catch (e) {
     console.warn('清除回放地图失败:', e);
@@ -3449,6 +3689,23 @@ if (replayBtn) {
     // 动画回放不需要二次确认，直接打开
     replayOverlay.style.display = 'flex';
     replayStatusSpan.textContent = '准备就绪';
+
+    // 销毁旧地图实例，重新加载以匹配当前地图类型
+    if (replayMapInstance) {
+      try {
+        if (currentMapType === 'amap' && replayMapInstance.destroy) {
+          replayMapInstance.destroy();
+        } else if (currentMapType === 'google') {
+          document.getElementById('replayMap').innerHTML = '';
+        } else if (currentMapType === 'leaflet' && replayMapInstance.remove) {
+          replayMapInstance.remove();
+        }
+      } catch (e) {
+        console.warn('销毁回放地图失败:', e);
+      }
+      replayMapInstance = null;
+    }
+
     initReplayMap();
     buildReplayYearOptions();
 
@@ -3491,6 +3748,11 @@ if (replayCloseBtn) {
     if (window._replayKeyHandler) {
       window.removeEventListener('keydown', window._replayKeyHandler);
       delete window._replayKeyHandler;
+    }
+
+    // 自动重置回放状态
+    if (replayResetBtn) {
+      replayResetBtn.click();
     }
   });
 }
@@ -4425,22 +4687,43 @@ function restoreData(file) {
 // Load records from localStorage on startup
 function initialLoad() {
   try {
+    console.log('开始初始化加载');
+
     // 首先加载地理编码缓存
     loadGeocodeCache();
 
-    // 加载保存的地图类型
-    currentMapType = localStorage.getItem('currentMapType') || 'amap';
-
-    // 根据地图类型初始化相应的地图
-    if (currentMapType === 'google') {
-      googleMap = initGoogleMap();
-      map = googleMap;
-      mapToggle.textContent = '🗺️ 切换到高德地图';
+    // Read map type from localStorage (for cross-page synchronization)
+    const savedMapType = localStorage.getItem('currentMapType');
+    if (savedMapType && ['amap', 'google', 'leaflet'].includes(savedMapType)) {
+      currentMapType = savedMapType;
+      console.log(`从 localStorage 读取地图类型: ${currentMapType}`);
     } else {
+      currentMapType = 'amap'; // Default to amap if not found or invalid
+    }
+
+    // 初始化对应地图
+    if (currentMapType === 'leaflet') {
+      leafletMap = initLeafletMap();
+      map = leafletMap;
+      if (mapSelect) mapSelect.value = 'leaflet';
+      // 立即应用主题（如果是暗色模式）
+      updateMapTheme();
+    } else if (currentMapType === 'google' && window.google && window.google.maps) {
+      googleMap = initGoogleMap();
+      if (googleMap) {
+        map = googleMap;
+        if (mapSelect) mapSelect.value = 'google';
+      } else {
+        currentMapType = 'amap';
+        amapInstance = initAmapMap();
+        map = amapInstance;
+        if (mapSelect) mapSelect.value = 'amap';
+      }
+    } else { // currentMapType is 'amap' or fallback
       currentMapType = 'amap'; // 确保默认为高德地图
       amapInstance = initAmapMap();
       map = amapInstance;
-      mapToggle.textContent = '🗺️ 切换到谷歌地图';
+      if (mapSelect) mapSelect.value = 'amap';
     }
 
     // 应用当前实体UI
@@ -4547,6 +4830,10 @@ function initialLoad() {
       amapInstance.on('complete', handleMapLoad);
     } else if (currentMapType === 'google' && googleMap) {
       google.maps.event.addListenerOnce(googleMap, 'idle', handleMapLoad);
+    } else if (currentMapType === 'leaflet' && leafletMap) {
+      // Leaflet maps are ready immediately after creation
+      // Use a small timeout to ensure DOM is fully ready
+      setTimeout(handleMapLoad, 100);
     }
 
     clearForm();
@@ -4872,10 +5159,10 @@ window.initGoogleMapsAPI = function realInitGoogleMapsAPI() {
   if (googleMapsLoaded) { console.log('谷歌地图API已标记加载，跳过重复 init'); return; }
   console.log('🎉 谷歌地图API加载完成回调触发 (real)');
   googleMapsLoaded = true;
-  if (currentMapType === 'amap') {
-    mapToggle.disabled = false;
-    mapToggle.style.opacity = '1';
-    mapToggle.title = '';
+  if (currentMapType === 'amap' && mapSelect) {
+    mapSelect.disabled = false;
+    mapSelect.style.opacity = '1';
+    mapSelect.title = '';
     console.log('✅ 地图切换功能已启用');
   } else if (currentMapType === 'google' && !googleMap) {
     // 如果页面初始就是 google 模式且回调刚到，补初始化
