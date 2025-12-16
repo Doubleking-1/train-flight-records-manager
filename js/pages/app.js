@@ -234,10 +234,19 @@ function initGoogleMap() {
 
   const isDarkMode = document.body.classList.contains('dark');
   const mapOptions = API_CONFIG.getGoogleMapOptions(isDarkMode);
+  mapOptions.scaleControl = true; // Show scale bar
 
   try {
     const googleMapInstance = new google.maps.Map(document.getElementById('mapContainer'), mapOptions);
     console.log('谷歌地图创建成功');
+
+    // Add zoom change listener to update zoom level display
+    googleMapInstance.addListener('zoom_changed', () => {
+      updateZoomLevelDisplay(googleMapInstance.getZoom());
+    });
+    // Initial update
+    updateZoomLevelDisplay(googleMapInstance.getZoom());
+
     return googleMapInstance;
   } catch (error) {
     console.error('创建谷歌地图失败:', error);
@@ -246,16 +255,37 @@ function initGoogleMap() {
   }
 }
 
+// Update zoom level display
+function updateZoomLevelDisplay(zoom) {
+  const zoomLevelValue = document.getElementById('zoomLevelValue');
+  if (zoomLevelValue) {
+    zoomLevelValue.textContent = Math.round(zoom);
+  }
+}
+
 // 初始化高德地图
 function initAmapMap() {
   const savedTheme = localStorage.getItem('theme') || 'light';
-  return new AMap.Map('mapContainer', {
+  const amapInstance = new AMap.Map('mapContainer', {
     center: [106.712, 34.205],
     zoom: 5,
     mapStyle: savedTheme === 'dark' ? DARK_MAP_STYLE : LIGHT_MAP_STYLE,
-    mapStyle: savedTheme === 'dark' ? DARK_MAP_STYLE : LIGHT_MAP_STYLE,
     scrollWheel: false, // 默认禁止缩放，需按 Command/Alt 键开启
   });
+  // Add Scale Control
+  AMap.plugin('AMap.Scale', function () {
+    var scale = new AMap.Scale();
+    amapInstance && amapInstance.addControl(scale);
+  });
+
+  // Add zoom change listener to update zoom level display
+  amapInstance.on('zoomchange', () => {
+    updateZoomLevelDisplay(amapInstance.getZoom());
+  });
+  // Initial update
+  updateZoomLevelDisplay(amapInstance.getZoom());
+
+  return amapInstance;
 }
 
 // 初始化 Leaflet 地图 (OSM)
@@ -288,6 +318,16 @@ function initLeafletMap() {
     subdomains: 'abcd',
     maxZoom: 20
   }).addTo(map);
+
+  // Add Scale Control
+  L.control.scale({ imperial: false }).addTo(map);
+
+  // Add zoom change listener to update zoom level display
+  map.on('zoomend', () => {
+    updateZoomLevelDisplay(map.getZoom());
+  });
+  // Initial update
+  updateZoomLevelDisplay(map.getZoom());
 
   return map;
 }
@@ -584,6 +624,9 @@ function sortRecords(field) {
       if (f === 'duration') {
         return parseDurationToMinutes(rec.duration);
       }
+      if (f === 'datetime') {
+        return (rec.date || '') + ' ' + (rec.time || '');
+      }
       return rec[f];
     };
 
@@ -680,6 +723,7 @@ function rerenderTable(filterYear = null) {
           <div class="action-menu-dropdown">
             <button class="modify">✏️ 修改</button>
             <button class="insert">➕ 插入</button>
+
             <button class="redraw">🔄 重新画线</button>
             <button class="delete">🗑️ 删除</button>
           </div>
@@ -759,23 +803,7 @@ function confirmRun(message, action) {
 }
 
 // 计算总时长（将时长字符串转换为分钟数）
-function parseDurationToMinutes(duration) {
-  if (!duration) return 0;
-  const match = duration.match(/(\d{1,2}):(\d{1,2})/);
-  if (match) {
-    const hours = parseInt(match[1]) || 0;
-    const minutes = parseInt(match[2]) || 0;
-    return hours * 60 + minutes;
-  }
-  return 0;
-}
-
-// 将分钟数转换为时长字符串
-function formatMinutesToDuration(minutes) {
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return `${hours}小时${mins}分钟`;
-}
+// parseDurationToMinutes and formatMinutesToDuration moved to utils/helpers.js
 
 // --- 辅助：时长选择器 ---
 function buildDurationSelects(initialHHMM = '') {
@@ -811,118 +839,7 @@ function readDurationFromRowCell(td) {
 }
 
 // 更新历史总结
-function updateAllTimeSummary() {
-  const container = document.getElementById('allStatsGrid');
-
-  if (records.length === 0) {
-    container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #999;">暂无数据</div>';
-    return;
-  }
-
-  // 统计数据
-  const totalTrips = records.length;
-  const totalCost = records.reduce((sum, r) => sum + (r.cost || 0), 0);
-  const totalDistance = records.reduce((sum, r) => sum + (r.distance || 0), 0);
-  const totalMinutes = records.reduce((sum, r) => sum + parseDurationToMinutes(r.duration), 0);
-
-  // 统计城市（仅统计终点城市作为到访城市）
-  const cities = new Set();
-  records.forEach(r => {
-    if (r.endCity && r.endCity.trim()) {
-      cities.add(r.endCity.trim());
-    } else if (!r.endCity && r.endStation) { // 兼容无城市仅有站名的情况
-      cities.add(r.endStation.trim());
-    }
-  });
-
-  // 找出最远和最近的行程
-  const longestTrip = records.reduce((a, r) => (r.distance || 0) > (a.distance || 0) ? r : a, records[0]);
-
-  // 找出时长最长的行程
-  const longestDurationTrip = records.reduce((a, r) => parseDurationToMinutes(r.duration) > parseDurationToMinutes(a.duration) ? r : a, records[0]);
-
-  // 找出最贵和最便宜的行程
-  const mostExpensive = records.reduce((a, r) => (r.cost || 0) > (a.cost || 0) ? r : a, records[0]);
-
-  // 平均值
-  const avgCost = totalTrips > 0 ? (totalCost / totalTrips).toFixed(2) : 0;
-  const avgDistance = totalTrips > 0 ? (totalDistance / totalTrips).toFixed(1) : 0;
-  const avgDuration = totalTrips > 0 ? formatMinutesToDuration(Math.round(totalMinutes / totalTrips)) : '0分钟';
-
-  // 辅助函数：格式化行程显示
-  const fmtTrip = (r) => {
-    const start = r.startCity || r.startStation;
-    const end = r.endCity || r.endStation;
-    return `${start} → ${end}`;
-  };
-
-  // 生成统计卡片 (4x3 布局)
-  // 列1: 数量/杂项 (总行程, 到访城市, 绕地球圈数)
-  // 列2: 里程 (总里程, 平均里程, 最远行程)
-  // 列3: 时长 (总时长, 平均时长, 最长时长)
-  // 列4: 花费 (总花费, 平均花费, 最贵行程)
-
-  container.innerHTML = `
-        <!-- 第一行：总量 (Totals) -->
-        <div class="stat-card">
-          <div class="stat-value">${totalTrips}</div>
-          <div class="stat-label">🚩 总行程数</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${totalDistance.toLocaleString()}</div>
-          <div class="stat-label">📏 总里程 (公里)</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${formatMinutesToDuration(totalMinutes)}</div>
-          <div class="stat-label">⏳ 总乘车时长</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">¥${totalCost.toFixed(2)}</div>
-          <div class="stat-label">💰 总花费</div>
-        </div>
-
-        <!-- 第二行：平均/其他 (Averages/Counts) -->
-        <div class="stat-card">
-          <div class="stat-value">${cities.size}</div>
-          <div class="stat-label">🏙️ 到访城市</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${avgDistance}</div>
-          <div class="stat-label">📏 平均里程 (km)</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${avgDuration}</div>
-          <div class="stat-label">⏳ 平均时长</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">¥${avgCost}</div>
-          <div class="stat-label">💰 平均票价</div>
-        </div>
-
-        <!-- 第三行：纪录之最 (Records) -->
-        <div class="stat-card">
-          <div class="stat-value" style="font-size:18px;">${(totalDistance / 40075).toFixed(2)} 圈</div>
-          <div class="stat-label">🌍 绕地球圈数</div>
-        </div>
-        <div class="stat-card interactable-card" id="stat-all-longest-dist">
-          <div class="stat-value" style="font-size:16px;">${fmtTrip(longestTrip)}</div>
-          <div class="stat-label">📏 最远行程 (${longestTrip.distance} km)</div>
-        </div>
-        <div class="stat-card interactable-card" id="stat-all-longest-time">
-          <div class="stat-value" style="font-size:16px;">${fmtTrip(longestDurationTrip)}</div>
-          <div class="stat-label">⏳ 最长时长 (${longestDurationTrip.duration})</div>
-        </div>
-        <div class="stat-card interactable-card" id="stat-all-most-exp">
-          <div class="stat-value" style="font-size:16px;">${fmtTrip(mostExpensive)}</div>
-          <div class="stat-label">💰 最贵行程 (¥${mostExpensive.cost})</div>
-        </div>
-      `;
-
-  // Bind click events
-  document.getElementById('stat-all-longest-dist').onclick = () => highlightRecord(longestTrip);
-  document.getElementById('stat-all-longest-time').onclick = () => highlightRecord(longestDurationTrip);
-  document.getElementById('stat-all-most-exp').onclick = () => highlightRecord(mostExpensive);
-}
+// updateAllTimeSummary moved to modules/statistics.js
 
 // 更新年份选择器
 function updateYearSelect() {
@@ -943,133 +860,7 @@ function updateYearSelect() {
 }
 
 // 更新年度总结
-function updateYearlySummary(year) {
-  const container = document.getElementById('yearlyStatsGrid');
-
-  if (!year) {
-    container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #999;">请选择年份</div>';
-    return;
-  }
-
-  const yearRecords = records.filter(r => r.date && r.date.substring(0, 4) === year);
-
-  if (yearRecords.length === 0) {
-    container.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #999;">该年份暂无数据</div>';
-    return;
-  }
-
-  // 统计数据
-  const totalTrips = yearRecords.length;
-  const totalCost = yearRecords.reduce((sum, r) => sum + (r.cost || 0), 0);
-  const totalDistance = yearRecords.reduce((sum, r) => sum + (r.distance || 0), 0);
-  const totalMinutes = yearRecords.reduce((sum, r) => sum + parseDurationToMinutes(r.duration), 0);
-
-  // 统计城市（仅统计终点城市）
-  const cities = new Set();
-  yearRecords.forEach(r => {
-    if (r.endCity && r.endCity.trim()) {
-      cities.add(r.endCity.trim());
-    } else if (!r.endCity && r.endStation) {
-      cities.add(r.endStation.trim());
-    }
-  });
-
-  // 找出最远和最近的行程 (基于 yearRecords)
-  const longestTrip = yearRecords.reduce((a, r) => (r.distance || 0) > (a.distance || 0) ? r : a, yearRecords[0]);
-
-  // 找出时长最长的行程
-  const longestDurationTrip = yearRecords.reduce((a, r) => parseDurationToMinutes(r.duration) > parseDurationToMinutes(a.duration) ? r : a, yearRecords[0]);
-
-  // 找出最贵和最便宜的行程
-  const mostExpensive = yearRecords.reduce((a, r) => (r.cost || 0) > (a.cost || 0) ? r : a, yearRecords[0]);
-
-  // 平均值
-  const avgCost = totalTrips > 0 ? (totalCost / totalTrips).toFixed(2) : 0;
-  const avgDistance = totalTrips > 0 ? (totalDistance / totalTrips).toFixed(1) : 0;
-  const avgDuration = totalTrips > 0 ? formatMinutesToDuration(Math.round(totalMinutes / totalTrips)) : '0分钟';
-
-  // 辅助函数：格式化行程显示
-  const fmtTrip = (r) => {
-    if (!r) return '无';
-    const start = r.startCity || r.startStation;
-    const end = r.endCity || r.endStation;
-    return `${start} → ${end}`;
-  };
-
-  // 计算占总体比例
-  const allTotalCost = records.reduce((sum, r) => sum + (r.cost || 0), 0);
-  const allTotalDistance = records.reduce((sum, r) => sum + (r.distance || 0), 0);
-
-  // 生成统计卡片 (4x3 布局) - 保持与 updateAllTimeSummary 完全一致
-  container.innerHTML = `
-        <!-- 第一行：总量 (Totals) -->
-        <div class="stat-card">
-          <div class="stat-value">${totalTrips}</div>
-          <div class="stat-label">🚩 ${year}年总行程</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${totalDistance.toLocaleString()}</div>
-          <div class="stat-label">📏 总里程 (公里)</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${formatMinutesToDuration(totalMinutes)}</div>
-          <div class="stat-label">⏳ 总乘车时长</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">¥${totalCost.toFixed(2)}</div>
-          <div class="stat-label">💰 总花费</div>
-        </div>
-
-        <!-- 第二行：平均/其他 (Averages/Counts) -->
-        <div class="stat-card">
-          <div class="stat-value">${cities.size}</div>
-          <div class="stat-label">🏙️ 到访城市</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${avgDistance}</div>
-          <div class="stat-label">📏 平均里程 (km)</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${avgDuration}</div>
-          <div class="stat-label">⏳ 平均时长</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">¥${avgCost}</div>
-          <div class="stat-label">💰 平均票价</div>
-        </div>
-
-        <!-- 第三行：纪录之最 (Records) -->
-        <div class="stat-card">
-          <div class="stat-value" style="font-size:18px;">${(totalDistance / 40075).toFixed(2)} 圈</div>
-          <div class="stat-label">🌍 绕地球圈数</div>
-        </div>
-        <div class="stat-card interactable-card" id="stat-year-longest-dist">
-          <div class="stat-value" style="font-size:16px;">${fmtTrip(longestTrip)}</div>
-          <div class="stat-label">📏 最远行程 (${longestTrip ? longestTrip.distance : 0} km)</div>
-        </div>
-        <div class="stat-card interactable-card" id="stat-year-longest-time">
-          <div class="stat-value" style="font-size:16px;">${fmtTrip(longestDurationTrip)}</div>
-          <div class="stat-label">⏳ 最长时长 (${longestDurationTrip ? longestDurationTrip.duration : '0'})</div>
-        </div>
-        <div class="stat-card interactable-card" id="stat-year-most-exp">
-          <div class="stat-value" style="font-size:16px;">${fmtTrip(mostExpensive)}</div>
-          <div class="stat-label">💰 最贵行程 (¥${mostExpensive ? mostExpensive.cost : 0})</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${allTotalCost > 0 ? (totalCost / allTotalCost * 100).toFixed(1) : 0}%</div>
-          <div class="stat-label">占总花费比例</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-value">${allTotalDistance > 0 ? (totalDistance / allTotalDistance * 100).toFixed(1) : 0}%</div>
-          <div class="stat-label">占总里程比例</div>
-        </div>
-      `;
-
-  // Bind click events
-  document.getElementById('stat-year-longest-dist').onclick = () => highlightRecord(longestTrip);
-  document.getElementById('stat-year-longest-time').onclick = () => highlightRecord(longestDurationTrip);
-  document.getElementById('stat-year-most-exp').onclick = () => highlightRecord(mostExpensive);
-}
+// updateYearlySummary moved to modules/statistics.js
 
 // 新增：从表格同步数据到records数组
 function syncRecordsFromTable() {
@@ -1137,6 +928,7 @@ function addRecordToTable(recordData, insertAfterTr = null) {
             <div class="action-menu-dropdown">
               <button class="modify">✏️ 修改</button>
               <button class="insert">➕ 插入</button>
+
               <button class="redraw">🔄 重新画线</button>
               <button class="delete">🗑️ 删除</button>
             </div>
@@ -2154,6 +1946,8 @@ function attachRowEvents(tr) {
         }
       }, { once: true });
     }
+
+
   };
   bindActions();
 }
@@ -2293,6 +2087,7 @@ function renderRowFromData(tr, recordData) {
           <div class="action-menu-dropdown">
             <button class="modify">✏️ 修改</button>
             <button class="insert">➕ 插入</button>
+
             <button class="redraw">🔄 重新画线</button>
             <button class="delete">🗑️ 删除</button>
           </div>
@@ -2525,18 +2320,7 @@ function buildGeocodeQuery(city, station) {
   return station.trim(); // 仅原始站名，不自动补“站”
 }
 
-// 坐标系转换工具（WGS84 -> GCJ-02），仅在高德绘图且位于中国范围时使用
-function isInChina(lon, lat) { return lon > 73 && lon < 135.05 && lat > 3 && lat < 53.9; }
-function wgs84ToGcj02(lon, lat) {
-  if (!isInChina(lon, lat)) return [lon, lat];
-  const a = 6378245.0, ee = 0.00669342162296594323;
-  let dLat = transformLat(lon - 105.0, lat - 35.0), dLon = transformLon(lon - 105.0, lat - 35.0);
-  const radLat = lat / 180 * Math.PI; let magic = Math.sin(radLat); magic = 1 - ee * magic * magic; const sqrtMagic = Math.sqrt(magic);
-  dLat = (dLat * 180) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI); dLon = (dLon * 180) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
-  return [lon + dLon, lat + dLat];
-}
-function transformLat(x, y) { let ret = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x)); ret += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3; ret += (20 * Math.sin(y * Math.PI) + 40 * Math.sin(y / 3 * Math.PI)) * 2 / 3; ret += (160 * Math.sin(y / 12 * Math.PI) + 320 * Math.sin(y * Math.PI / 30)) * 2 / 3; return ret; }
-function transformLon(x, y) { let ret = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x)); ret += (20 * Math.sin(6 * x * Math.PI) + 20 * Math.sin(2 * x * Math.PI)) * 2 / 3; ret += (20 * Math.sin(x * Math.PI) + 40 * Math.sin(x / 3 * Math.PI)) * 2 / 3; ret += (150 * Math.sin(x / 12 * Math.PI) + 300 * Math.sin(x / 30 * Math.PI)) * 2 / 3; return ret; }
+// Coordinate conversion functions (isInChina, wgs84ToGcj02, transformLat, transformLon) moved to utils/helpers.js
 // ================== Nominatim-only 结束 ==================
 
 // 通用延迟工具
@@ -2812,6 +2596,7 @@ function addRecordToTable(recordData, insertAfterTr = null) {
             <div class="action-menu-dropdown">
               <button class="modify">✏️ 修改</button>
               <button class="insert">➕ 插入</button>
+
               <button class="redraw">🔄 重新画线</button>
               <button class="delete">🗑️ 删除</button>
             </div>
@@ -3032,6 +2817,7 @@ function reloadForEntity(entity) {
               <div class="action-menu-dropdown">
                 <button class="modify">✏️ 修改</button>
                 <button class="insert">➕ 插入</button>
+
                 <button class="redraw">🔄 重新画线</button>
                 <button class="delete">🗑️ 删除</button>
               </div>
@@ -3232,6 +3018,8 @@ let replayIndex = 0;
 let replayRecords = [];
 let replayPaused = false;
 let replayAnimationId = null; // Animation frame ID
+let replayPolylines = []; // Store replay polylines for cleanup
+let replayCurrentMarker = null; //  Store current animated marker
 let sequentialYears = [];
 let sequentialPointer = 0;
 let isSequentialMode = false;
@@ -3249,115 +3037,11 @@ const replaySpeedValue = document.getElementById('replaySpeedValue');
 const replayWidthInput = document.getElementById('replayWidthInput');
 const replayWidthValue = document.getElementById('replayWidthValue');
 
-function initReplayMap() {
-  if (replayMapInstance) return;
-  const isDark = document.body.classList.contains('dark');
-  const replayMapDiv = document.getElementById('replayMap');
-
-  if (currentMapType === 'amap') {
-    replayMapInstance = new AMap.Map('replayMap', { viewMode: '2D', zoom: 4, center: [105, 35] });
-    try { replayMapInstance.setMapStyle(isDark ? DARK_MAP_STYLE : LIGHT_MAP_STYLE); } catch (e) { }
-  } else if (currentMapType === 'google') {
-    // Check if Google Maps API is available
-    if (!window.google || !window.google.maps) {
-      console.warn('谷歌地图API未加载，无法在回放中使用谷歌地图');
-      alert('谷歌地图API未加载或API密钥无效。\n回放将使用高德地图代替。');
-      // Fallback to AMap
-      replayMapInstance = new AMap.Map('replayMap', { viewMode: '2D', zoom: 4, center: [105, 35] });
-      try { replayMapInstance.setMapStyle(isDark ? DARK_MAP_STYLE : LIGHT_MAP_STYLE); } catch (e) { }
-    } else {
-      const styles = API_CONFIG.getGoogleMapOptions(isDark).styles;
-      replayMapInstance = new google.maps.Map(replayMapDiv, { zoom: 4, center: { lat: 35, lng: 105 }, mapTypeId: google.maps.MapTypeId.ROADMAP, styles: styles });
-    }
-  } else if (currentMapType === 'leaflet') {
-    replayMapInstance = L.map('replayMap', {
-      center: [35, 105],
-      zoom: 4,
-      scrollWheelZoom: false
-    });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20
-    }).addTo(replayMapInstance);
-
-    // Apply dark mode filter if needed
-    if (isDark) {
-      try { replayMapInstance.getContainer().style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)'; } catch (e) { }
-    }
-  }
-}
-
-function buildReplayYearOptions() {
-  if (!replayYearSelect) return;
-  const years = [...new Set(records.filter(r => r.date).map(r => r.date.substring(0, 4)))].sort();
-  replayYearSelect.innerHTML = '<option value="">全部</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
-}
 
 let replayCumulativeDistance = 0;
 let replayCumulativeTime = 0;
 
-function getRawRecords(type) {
-  let raw = [];
-  if (type === 'train') {
-    try {
-      raw = JSON.parse(localStorage.getItem('trainRecords')) || [];
-      // Tag with entity type for color coding
-      raw.forEach(r => r._entityType = 'train');
-    } catch (e) { }
-  } else if (type === 'plane') {
-    try {
-      raw = JSON.parse(localStorage.getItem('planeRecords')) || [];
-      // Tag with entity type for color coding
-      raw.forEach(r => r._entityType = 'plane');
-    } catch (e) { }
-  } else if (type === 'all') {
-    try {
-      const t = JSON.parse(localStorage.getItem('trainRecords')) || [];
-      const p = JSON.parse(localStorage.getItem('planeRecords')) || [];
-      // Tag with entity type
-      t.forEach(r => r._entityType = 'train');
-      p.forEach(r => r._entityType = 'plane');
-      raw = [...t, ...p];
-      // 按时间排序
-      raw.sort((a, b) => {
-        const da = new Date((a.date || '') + ' ' + (a.time || '00:00'));
-        const db = new Date((b.date || '') + ' ' + (b.time || '00:00'));
-        return da - db;
-      });
-    } catch (e) { }
-  }
-  return raw;
-}
 
-function collectReplayPaths(year = '') {
-  // 获取当前选择的数据源
-  const sourceRadio = document.querySelector('input[name="replaySource"]:checked');
-  const sourceType = sourceRadio ? sourceRadio.value : 'all';
-
-  const rawRecords = getRawRecords(sourceType);
-
-  // 仅选择已经缓存了 pathWGS 的记录（按年份过滤可选）
-  replayRecords = rawRecords.filter(r => Array.isArray(r.pathWGS) && r.pathWGS.length > 1 && (!year || (r.date && r.date.substring(0, 4) === year)));
-  replayTotalSpan.textContent = replayRecords.length.toString();
-  replayProgressSpan.textContent = '0';
-  replayIndex = 0;
-  replayCurrentYear = year;
-
-  // 更新提示文本
-  const sourceLabel = sourceType === 'train' ? '火车' : (sourceType === 'plane' ? '飞机' : '全部');
-  replayYearModeHint.textContent = `来源：${sourceLabel} | 模式：${isSequentialMode ? '逐年' : (year ? '单年 ' + year : '全部')}`;
-
-  replayYearTotal = replayRecords.length;
-  replayYearDone = 0;
-  replayCumulativeDistance = 0;
-  replayCumulativeTime = 0;
-  replayYearProgressTotal.textContent = replayYearTotal.toString();
-  replayYearProgressCnt.textContent = '0';
-  if (replayYearProgressBar) replayYearProgressBar.style.width = '0%';
-  if (replayCurrentRouteBox) replayCurrentRouteBox.textContent = '—';
-  if (replayRouteList) replayRouteList.innerHTML = '';
-}
 
 // 监听数据源切换
 document.querySelectorAll('input[name="replaySource"]').forEach(radio => {
@@ -3398,291 +3082,9 @@ document.querySelectorAll('input[name="replaySource"]').forEach(radio => {
 
 
 
-function animatePolyline(polyline, fullPath, onComplete) {
-  let pointIndex = 0;
-  const totalPoints = fullPath.length;
-  // Dynamic speed: ensure at least 30 frames (0.5s) unless very short, max 120 frames (2s)
-  // Calculate points per frame
-  // Base 60, adjusted by slider (10 to 100). 30 is default.
-  // Higher slider = faster = more points per frame.
-  // Multiplier: slider / 30.
-  let speedVal = 30;
-  if (replaySpeedInput) speedVal = parseInt(replaySpeedInput.value, 10) || 30;
-  const multiplier = speedVal / 30;
-  const pointsPerFrame = Math.max(1, Math.ceil((totalPoints / 60) * multiplier));
 
-  function step() {
-    if (replayPaused) {
-      // Stop animation loop if paused
-      return;
-    }
-    if (!replayMapInstance) return;
 
-    for (let i = 0; i < pointsPerFrame; i++) {
-      if (pointIndex < totalPoints) {
-        if (currentMapType === 'amap') {
-          const currentPath = polyline.getPath();
-          currentPath.push(fullPath[pointIndex]);
-          polyline.setPath(currentPath);
-        } else if (currentMapType === 'google') {
-          const currentPath = polyline.getPath();
-          currentPath.push(fullPath[pointIndex]);
-        } else if (currentMapType === 'leaflet') {
-          const currentPath = polyline.getLatLngs();
-          currentPath.push(fullPath[pointIndex]);
-          polyline.setLatLngs(currentPath);
-        }
-        pointIndex++;
-      }
-    }
 
-    if (pointIndex < totalPoints) {
-      replayAnimationId = requestAnimationFrame(step);
-    } else {
-      onComplete && onComplete();
-    }
-  }
-  step();
-}
-
-function drawReplayOne() {
-  if (replayPaused) return; // Should not happen if logic checks pause before calling
-
-  if (replayIndex >= replayRecords.length) {
-    replayStatusSpan.textContent = '完成';
-    replayTimer = null; // Mark as done
-    // 如果是逐年模式，进入下一年
-    if (isSequentialMode) {
-      setTimeout(() => proceedNextSequentialYear(), 500);
-    }
-    return;
-  }
-  const rec = replayRecords[replayIndex];
-  const year = rec.date ? rec.date.substring(0, 4) : '';
-
-  // Determine color based on source type
-  const sourceRadio = document.querySelector('input[name="replaySource"]:checked');
-  const sourceType = sourceRadio ? sourceRadio.value : 'all';
-  let strokeColor;
-
-  if (sourceType === 'all') {
-    // In 'all' mode, use entity-based colors: red for train, blue for plane
-    strokeColor = rec._entityType === 'plane' ? '#2196F3' : '#F44336'; // Blue for plane, Red for train
-  } else {
-    // In single entity mode, use year-based colors
-    strokeColor = getYearColor(year);
-  }
-
-  // 累加数据
-  replayCumulativeDistance += (rec.distance || 0);
-  replayCumulativeTime += parseDurationToMinutes(rec.duration);
-
-  // 显示累计数据
-  if (replayCurrentRouteBox) {
-    let distStr = '';
-    if (replayCumulativeDistance >= 10000) {
-      distStr = (replayCumulativeDistance / 10000).toFixed(2) + ' 万公里';
-    } else {
-      distStr = Math.round(replayCumulativeDistance).toLocaleString() + ' 公里';
-    }
-    const timeStr = formatMinutesToDuration(replayCumulativeTime);
-    replayCurrentRouteBox.innerHTML = `
-      <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
-        <span>总里程:</span> <span style="font-weight:bold; color:var(--primary-color);">${distStr}</span>
-      </div>
-      <div style="display:flex; justify-content:space-between;">
-        <span>总时长:</span> <span style="font-weight:bold; color:var(--primary-color);">${timeStr}</span>
-      </div>
-    `;
-  }
-  if (replayRouteList) {
-    const li = document.createElement('li');
-    li.style.padding = '2px 4px';
-    li.style.border = '1px solid var(--border-color)';
-    li.style.borderRadius = '4px';
-    li.style.background = 'var(--input-bg)';
-    li.style.cursor = 'pointer';
-    li.style.display = 'flex';
-    li.style.alignItems = 'center';
-    li.style.gap = '6px';
-    const startLabel = (rec.startCity || rec.startStation || '?');
-    const endLabel = (rec.endCity || rec.endStation || '?');
-    li.textContent = `${startLabel} → ${endLabel}` + (rec.distance ? ` (${rec.distance}km)` : '');
-    // 高亮当前
-    replayRouteList.querySelectorAll('li').forEach(n => n.style.outline = 'none');
-    li.style.outline = '2px solid var(--primary-color)';
-    // 点击聚焦（平移中心）
-    li.addEventListener('click', () => {
-      try {
-        if (!rec.pathWGS || !rec.pathWGS.length) return;
-        const mid = rec.pathWGS[Math.floor(rec.pathWGS.length / 2)];
-        if (currentMapType === 'amap' && replayMapInstance) {
-          replayMapInstance.setZoomAndCenter(6, [mid[0], mid[1]]);
-        } else if (currentMapType === 'google' && replayMapInstance) {
-          replayMapInstance.setZoom(6);
-          replayMapInstance.setCenter({ lat: mid[1], lng: mid[0] });
-        } else if (currentMapType === 'leaflet' && replayMapInstance) {
-          replayMapInstance.setView([mid[1], mid[0]], 6);
-        }
-      } catch (e) { }
-    });
-    replayRouteList.appendChild(li);
-    // 滚动到底部
-    replayRouteList.parentElement.scrollTop = replayRouteList.parentElement.scrollHeight;
-  }
-
-  // Cleanup partial polyline if re-entering same index (e.g. restart after pause)
-  if (replayPolylines[replayIndex]) {
-    if (currentMapType === 'amap') replayPolylines[replayIndex].setMap(null);
-    else if (currentMapType === 'google') replayPolylines[replayIndex].setMap(null);
-    else if (currentMapType === 'leaflet' && replayMapInstance) replayPolylines[replayIndex].remove();
-    replayPolylines[replayIndex] = null;
-  }
-
-  try {
-    let lineWidth = 1;
-    if (replayWidthInput) lineWidth = parseFloat(replayWidthInput.value) || 1;
-
-    let polyline = null;
-    let fullPath = [];
-
-    if (currentMapType === 'amap') {
-      let gcjPath = rec.pathGCJ;
-      if (!gcjPath || !gcjPath.length) {
-        gcjPath = rec.pathWGS.map(p => isInChina(p[0], p[1]) ? wgs84ToGcj02(p[0], p[1]) : p);
-      }
-      fullPath = gcjPath;
-      // Start with empty path
-      polyline = new AMap.Polyline({ path: [], strokeColor, strokeWeight: lineWidth, strokeOpacity: 0.9 });
-      replayMapInstance.add(polyline);
-      // Ensure we fill the array slot correctly
-      if (replayPolylines.length <= replayIndex) replayPolylines.push(polyline);
-      else replayPolylines[replayIndex] = polyline;
-
-    } else if (currentMapType === 'google') {
-      const googlePath = rec.pathWGS.map(p => ({ lat: p[1], lng: p[0] }));
-      fullPath = googlePath;
-      // Start with empty path
-      polyline = new google.maps.Polyline({ path: [], geodesic: false, strokeColor, strokeOpacity: 0.9, strokeWeight: lineWidth });
-      polyline.setMap(replayMapInstance);
-
-      if (replayPolylines.length <= replayIndex) replayPolylines.push(polyline);
-      else replayPolylines[replayIndex] = polyline;
-    } else if (currentMapType === 'leaflet') {
-      const leafletPath = rec.pathWGS.map(p => [p[1], p[0]]);
-      fullPath = leafletPath;
-      // Start with empty path
-      polyline = L.polyline([], {
-        color: strokeColor,
-        weight: lineWidth,
-        opacity: 0.9
-      }).addTo(replayMapInstance);
-
-      if (replayPolylines.length <= replayIndex) replayPolylines.push(polyline);
-      else replayPolylines[replayIndex] = polyline;
-    }
-
-    if (polyline && fullPath.length) {
-      animatePolyline(polyline, fullPath, () => {
-        // Animation Complete
-        replayIndex++;
-        // Update Progress
-        replayProgressSpan.textContent = replayIndex.toString();
-        // Update Status
-        replayStatusSpan.textContent = `绘制中 (${replayIndex}/${replayRecords.length})`;
-        if (replayIndex === replayRecords.length) {
-          replayStatusSpan.textContent = '完成';
-        }
-        // Update Year Progress
-        replayYearDone++;
-        if (replayYearProgressCnt) replayYearProgressCnt.textContent = replayYearDone.toString();
-        if (replayYearProgressBar) {
-          const pct = replayYearTotal ? (replayYearDone / replayYearTotal * 100) : 0;
-          replayYearProgressBar.style.width = pct.toFixed(2) + '%';
-        }
-
-        // Trigger next
-        drawReplayOne();
-      });
-
-      // Update initial status
-      replayStatusSpan.textContent = `绘制中 (${replayIndex + 1}/${replayRecords.length})`;
-    } else {
-      // Fallback if no path
-      replayIndex++;
-      drawReplayOne();
-    }
-
-  } catch (e) {
-    console.warn('回放绘制失败', e.message);
-    replayIndex++;
-    drawReplayOne();
-  }
-}
-
-function startReplay() {
-  if (!replayRecords.length) {
-    replayStatusSpan.textContent = '无可回放线路';
-    return;
-  }
-  replayPaused = false;
-  replayStatusSpan.textContent = '绘制中';
-  // Use a dummy timer flag so other logic thinks it's running? 
-  // Existing logic checks if (replayTimer) clearInterval...
-  // Let's keep replayTimer as a simple boolean flag or just not null
-  if (replayTimer) clearInterval(replayTimer); // just in case
-  replayTimer = 1; // Mark as running
-
-  drawReplayOne();
-}
-
-// Store replay polylines for cleanup
-let replayPolylines = [];
-
-function clearReplayMapOnly() {
-  try {
-    // Cancel any ongoing animation
-    if (replayAnimationId) {
-      cancelAnimationFrame(replayAnimationId);
-      replayAnimationId = null;
-    }
-
-    if (currentMapType === 'amap' && replayMapInstance) {
-      // Clear all overlays without recreating the map to avoid flashing
-      replayMapInstance.clearMap();
-      replayPolylines = [];
-    } else if (currentMapType === 'google' && replayMapInstance) {
-      // Remove only the polylines, not the entire map
-      replayPolylines.forEach(polyline => {
-        if (polyline && polyline.setMap) polyline.setMap(null);
-      });
-      replayPolylines = [];
-    } else if (currentMapType === 'leaflet' && replayMapInstance) {
-      // Remove only the polylines
-      replayPolylines.forEach(polyline => {
-        if (polyline && polyline.remove) polyline.remove();
-      });
-      replayPolylines = [];
-    }
-  } catch (e) {
-    console.warn('清除回放地图失败:', e);
-  }
-}
-
-function proceedNextSequentialYear() {
-  if (!isSequentialMode) return;
-  if (sequentialPointer >= sequentialYears.length) {
-    replayStatusSpan.textContent = '逐年播放完成';
-    isSequentialMode = false;
-    return;
-  }
-  const year = sequentialYears[sequentialPointer++];
-  clearReplayMapOnly();
-  if (replayRouteList) replayRouteList.innerHTML = '';
-  collectReplayPaths(year);
-  replayStatusSpan.textContent = `年份 ${year} 开始`;
-  startReplay();
-}
 
 if (replayBtn) {
   replayBtn.addEventListener('click', () => {
@@ -4731,68 +4133,14 @@ function initialLoad() {
 
     // 从localStorage加载记录（按实体）
     records = JSON.parse(localStorage.getItem(getStorageKey())) || [];
+    console.log(`从 localStorage 加载了 ${records.length} 条记录`);
 
-    // 先清空表格
-    tbody.innerHTML = '';
+    // 默认按日期时间排序（这会自动调用 rerenderTable）
+    sortState.field = 'datetime';
+    sortState.order = 'asc';
+    sortRecords('datetime');
 
-    // 添加记录到表格（不绘制地图）
-    records.forEach(rec => {
-      const tr = document.createElement('tr');
-      const rpk = rec.distance > 0 ? (rec.cost / rec.distance).toFixed(4) : '';
-      tr.innerHTML = `
-            <td></td> <!-- Seq # updated later -->
-            <td>${rec.date || ''}</td>
-            <td>${rec.time || ''}</td>
-            <td>${rec.duration || ''}</td>
-            <td>${rec.trainNo || ''}</td>
-            <td>${rec.startStation || ''}</td>
-            <td>${rec.startCity || ''}</td>
-            <td>${rec.endStation || ''}</td>
-            <td>${rec.endCity || ''}</td>
-            <td>${rec.seatClass || ''}</td>
-            <td>${rec.trainType || ''}</td>
-            <td>${rec.bureau || ''}</td>
-            <td>${(rec.cost || 0).toFixed(2)}</td>
-            <td>${rec.distance || 0}</td>
-            <td>${rpk}</td>
-            <td>${(() => {
-          const durationMins = parseDurationToMinutes(rec.duration);
-          if ((rec.distance || 0) > 0 && durationMins > 0) {
-            return ((rec.distance || 0) / (durationMins / 60)).toFixed(1);
-          }
-          return '';
-        })()}</td>
-            <td>${rec.notes || ''}</td>
-            <td>
-              <div class="action-menu">
-                <button class="action-menu-btn">⋮</button>
-                <div class="action-menu-dropdown">
-                  <button class="modify">✏️ 修改</button>
-                  <button class="insert">➕ 插入</button>
-                  <button class="redraw">🔄 重新画线</button>
-                  <button class="delete">🗑️ 删除</button>
-                </div>
-              </div>
-            </td>
-          `;
-      tbody.appendChild(tr);
-      tr._record = rec;
-      attachRowEvents(tr);
-
-      // Add dropdown toggle functionality
-      const menuBtn = tr.querySelector('.action-menu-btn');
-      const menu = tr.querySelector('.action-menu');
-      menuBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        document.querySelectorAll('.action-menu.open').forEach(m => {
-          if (m !== menu) m.classList.remove('open');
-        });
-        menu.classList.toggle('open');
-      });
-    });
-
-    updateSequenceNumbers();
-
+    // updateSequenceNumbers 会在 rerenderTable 中调用，不需要重复
     // 初始化总结面板和图表
     updateSummaryPanels();
     createYearlyCharts();
