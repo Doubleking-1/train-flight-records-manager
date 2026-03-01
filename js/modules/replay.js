@@ -22,40 +22,40 @@ console.log('[Replay Module] 加载阶段2 - 核心动画函数');
 // ===========================================
 
 function performSmoothZoomTransition(targetPoint, onComplete) {
-    const ZOOM_OUT_LEVEL = 3;  // Zoom out to wide view
-    const ZOOM_OUT_DELAY = 100;  // Minimal delay after zoom out (ms)
-    const ZOOM_OUT_DURATION = 800; // Zoom out animation duration (ms)
+  const ZOOM_OUT_LEVEL = 4;  // Zoom out to wide view
+  const ZOOM_OUT_DELAY = 100;  // Minimal delay after zoom out (ms)
+  const ZOOM_OUT_DURATION = 800; // Zoom out animation duration (ms)
 
-    try {
-        if (currentMapType === 'amap') {
-            // Zoom out with animation
-            replayMapInstance.setZoom(ZOOM_OUT_LEVEL, false, ZOOM_OUT_DURATION); // false = animated
+  try {
+    if (currentMapType === 'amap') {
+      // Zoom out with animation
+      replayMapInstance.setZoom(ZOOM_OUT_LEVEL, false, ZOOM_OUT_DURATION); // false = animated
 
-            setTimeout(() => {
-                // Zoom in will be handled by adaptive zoom in drawReplayOne
-                onComplete();
-            }, ZOOM_OUT_DURATION + ZOOM_OUT_DELAY);
-
-        } else if (currentMapType === 'google') {
-            // Google Maps - has default smooth animation
-            replayMapInstance.setZoom(ZOOM_OUT_LEVEL);
-
-            setTimeout(() => {
-                onComplete();
-            }, ZOOM_OUT_DURATION + ZOOM_OUT_DELAY);
-
-        } else if (currentMapType === 'leaflet') {
-            // Leaflet with animation
-            replayMapInstance.setZoom(ZOOM_OUT_LEVEL, { animate: true, duration: ZOOM_OUT_DURATION / 1000 });
-
-            setTimeout(() => {
-                onComplete();
-            }, ZOOM_OUT_DURATION + ZOOM_OUT_DELAY);
-        }
-    } catch (e) {
-        console.error('Smooth zoom transition failed:', e);
+      setTimeout(() => {
+        // Zoom in will be handled by adaptive zoom in drawReplayOne
         onComplete();
+      }, ZOOM_OUT_DURATION + ZOOM_OUT_DELAY);
+
+    } else if (currentMapType === 'google') {
+      // Google Maps - has default smooth animation
+      replayMapInstance.setZoom(ZOOM_OUT_LEVEL);
+
+      setTimeout(() => {
+        onComplete();
+      }, ZOOM_OUT_DURATION + ZOOM_OUT_DELAY);
+
+    } else if (currentMapType === 'leaflet') {
+      // Leaflet with animation
+      replayMapInstance.setZoom(ZOOM_OUT_LEVEL, { animate: true, duration: ZOOM_OUT_DURATION / 1000 });
+
+      setTimeout(() => {
+        onComplete();
+      }, ZOOM_OUT_DURATION + ZOOM_OUT_DELAY);
     }
+  } catch (e) {
+    console.error('Smooth zoom transition failed:', e);
+    onComplete();
+  }
 }
 
 console.log('[Replay Module] performSmoothZoomTransition 已加载');
@@ -65,131 +65,131 @@ console.log('[Replay Module] performSmoothZoomTransition 已加载');
 // ===========================================
 
 function animatePolyline(polyline, fullPath, onComplete) {
-    let pointIndex = 0;
-    const totalPoints = fullPath.length;
-    // Dynamic speed: ensure at least 30 frames (0.5s) unless very short, max 120 frames (2s)
-    // Calculate points per frame
-    // Base 180 (3s), adjusted by slider.
-    // Higher slider = faster = more points per frame.
-    // Multiplier: slider / 30.
-    let speedVal = 30;
-    if (replaySpeedInput) speedVal = parseInt(replaySpeedInput.value, 10) || 30;
-    const multiplier = speedVal / 30;
-    const pointsPerFrame = Math.max(1, Math.ceil((totalPoints / 180) * multiplier));
+  let pointIndex = 0;
+  const totalPoints = fullPath.length;
+  // Dynamic speed: ensure at least 30 frames (0.5s) unless very short, max 120 frames (2s)
+  // Calculate points per frame
+  // Base 180 (3s), adjusted by slider.
+  // Higher slider = faster = more points per frame.
+  // Multiplier: slider / 30.
+  let speedVal = 30;
+  if (replaySpeedInput) speedVal = parseInt(replaySpeedInput.value, 10) || 30;
+  const multiplier = speedVal / 30;
+  const pointsPerFrame = Math.max(1, Math.ceil((totalPoints / 180) * multiplier));
 
-    function step() {
-        if (replayPaused) {
-            // Stop animation loop if paused
-            return;
-        }
-        if (!replayMapInstance) return;
-
-        // Batch frame updates to improve performance (update map once per frame instead of per point)
-        const pointsToAdd = [];
-        for (let i = 0; i < pointsPerFrame; i++) {
-            if (pointIndex < totalPoints) {
-                pointsToAdd.push(fullPath[pointIndex]);
-                pointIndex++;
-            }
-        }
-
-        if (pointsToAdd.length > 0) {
-            if (currentMapType === 'amap') {
-                const currentPath = polyline.getPath(); // Returns Array
-                // AMap path is simple array of LngLat or arrays
-                pointsToAdd.forEach(p => currentPath.push(p));
-                polyline.setPath(currentPath);
-            } else if (currentMapType === 'google') {
-                // Optimization: Get raw array, modify, set back (updates once)
-                // Or just push to MVCArray if small batch? pushing 30-100 times is bad.
-                // Let's replace the path.
-                const pathMVC = polyline.getPath();
-                pointsToAdd.forEach(p => pathMVC.push(p));
-            } else if (currentMapType === 'leaflet') {
-                const currentPath = polyline.getLatLngs(); // Returns Array
-                pointsToAdd.forEach(p => currentPath.push(p));
-                polyline.setLatLngs(currentPath);
-            }
-        }
-
-
-        // Map Center Follow: Move map center to the head of the drawing line (Smart Follow / Deadzone)
-        const followCheckbox = document.getElementById('replayMapFollowCheckbox');
-        if (pointIndex > 0 && followCheckbox && followCheckbox.checked) {
-            const lastP = fullPath[Math.min(pointIndex - 1, totalPoints - 1)];
-            try {
-                let shouldPan = false;
-                const marginRatio = 0.15; // 15% margin from edges
-
-                if (currentMapType === 'amap') {
-                    // AMap: Use pixel coordinates for accurate screen bounds check
-                    const pixel = replayMapInstance.lngLatToContainer(lastP);
-                    const size = replayMapInstance.getSize();
-                    if (pixel.x < size.width * marginRatio || pixel.x > size.width * (1 - marginRatio) ||
-                        pixel.y < size.height * marginRatio || pixel.y > size.height * (1 - marginRatio)) {
-                        shouldPan = true; // Use panTo for smooth animation
-                        replayMapInstance.panTo(lastP);
-                    }
-                } else if (currentMapType === 'leaflet') {
-                    // Leaflet: Use pixel coordinates
-                    const pixel = replayMapInstance.latLngToContainerPoint(lastP);
-                    const size = replayMapInstance.getSize();
-                    if (pixel.x < size.x * marginRatio || pixel.x > size.x * (1 - marginRatio) ||
-                        pixel.y < size.y * marginRatio || pixel.y > size.y * (1 - marginRatio)) {
-                        shouldPan = true;
-                        replayMapInstance.panTo(lastP, { animate: true, duration: 0.5 });
-                    }
-                } else if (currentMapType === 'google') {
-                    // Google: Use logic based on Bounds (approximate) to avoid complex OverlayView
-                    const bounds = replayMapInstance.getBounds();
-                    if (bounds) {
-                        const ne = bounds.getNorthEast();
-                        const sw = bounds.getSouthWest();
-                        const latSpan = ne.lat() - sw.lat();
-                        const lngSpan = ne.lng() - sw.lng();
-                        // Check if point is outside the safe inner box
-                        // Note: This logic is simplified and assumes standard projection
-                        const lat = typeof lastP.lat === 'function' ? lastP.lat() : lastP.lat;
-                        const lng = typeof lastP.lng === 'function' ? lastP.lng() : lastP.lng;
-
-                        if (lat > ne.lat() - latSpan * marginRatio || lat < sw.lat() + latSpan * marginRatio ||
-                            lng > ne.lng() - lngSpan * marginRatio || lng < sw.lng() + lngSpan * marginRatio) {
-                            shouldPan = true;
-                            replayMapInstance.panTo(lastP);
-                        }
-                    } else {
-                        replayMapInstance.setCenter(lastP); // Fallback if bounds valid yet
-                    }
-                }
-
-                // No "else": If inside deadzone, do nothing (keep map static)
-            } catch (e) {
-                // Ignore errors during fast switching or map disposal
-                console.table(e);
-            }
-        }
-
-        // Update marker position
-        if (replayCurrentMarker && pointIndex > 0) {
-            const lastP = fullPath[Math.min(pointIndex - 1, totalPoints - 1)];
-            try {
-                if (currentMapType === 'amap') {
-                    replayCurrentMarker.setPosition(lastP);
-                } else if (currentMapType === 'google') {
-                    replayCurrentMarker.setPosition(lastP);
-                } else if (currentMapType === 'leaflet') {
-                    replayCurrentMarker.setLatLng(lastP);
-                }
-            } catch (e) { }
-        }
-
-        if (pointIndex < totalPoints) {
-            replayAnimationId = requestAnimationFrame(step);
-        } else {
-            onComplete && onComplete();
-        }
+  function step() {
+    if (replayPaused) {
+      // Stop animation loop if paused
+      return;
     }
-    step();
+    if (!replayMapInstance) return;
+
+    // Batch frame updates to improve performance (update map once per frame instead of per point)
+    const pointsToAdd = [];
+    for (let i = 0; i < pointsPerFrame; i++) {
+      if (pointIndex < totalPoints) {
+        pointsToAdd.push(fullPath[pointIndex]);
+        pointIndex++;
+      }
+    }
+
+    if (pointsToAdd.length > 0) {
+      if (currentMapType === 'amap') {
+        const currentPath = polyline.getPath(); // Returns Array
+        // AMap path is simple array of LngLat or arrays
+        pointsToAdd.forEach(p => currentPath.push(p));
+        polyline.setPath(currentPath);
+      } else if (currentMapType === 'google') {
+        // Optimization: Get raw array, modify, set back (updates once)
+        // Or just push to MVCArray if small batch? pushing 30-100 times is bad.
+        // Let's replace the path.
+        const pathMVC = polyline.getPath();
+        pointsToAdd.forEach(p => pathMVC.push(p));
+      } else if (currentMapType === 'leaflet') {
+        const currentPath = polyline.getLatLngs(); // Returns Array
+        pointsToAdd.forEach(p => currentPath.push(p));
+        polyline.setLatLngs(currentPath);
+      }
+    }
+
+
+    // Map Center Follow: Move map center to the head of the drawing line (Smart Follow / Deadzone)
+    const followCheckbox = document.getElementById('replayMapFollowCheckbox');
+    if (pointIndex > 0 && followCheckbox && followCheckbox.checked) {
+      const lastP = fullPath[Math.min(pointIndex - 1, totalPoints - 1)];
+      try {
+        let shouldPan = false;
+        const marginRatio = 0.15; // 15% margin from edges
+
+        if (currentMapType === 'amap') {
+          // AMap: Use pixel coordinates for accurate screen bounds check
+          const pixel = replayMapInstance.lngLatToContainer(lastP);
+          const size = replayMapInstance.getSize();
+          if (pixel.x < size.width * marginRatio || pixel.x > size.width * (1 - marginRatio) ||
+            pixel.y < size.height * marginRatio || pixel.y > size.height * (1 - marginRatio)) {
+            shouldPan = true; // Use panTo for smooth animation
+            replayMapInstance.panTo(lastP);
+          }
+        } else if (currentMapType === 'leaflet') {
+          // Leaflet: Use pixel coordinates
+          const pixel = replayMapInstance.latLngToContainerPoint(lastP);
+          const size = replayMapInstance.getSize();
+          if (pixel.x < size.x * marginRatio || pixel.x > size.x * (1 - marginRatio) ||
+            pixel.y < size.y * marginRatio || pixel.y > size.y * (1 - marginRatio)) {
+            shouldPan = true;
+            replayMapInstance.panTo(lastP, { animate: true, duration: 0.5 });
+          }
+        } else if (currentMapType === 'google') {
+          // Google: Use logic based on Bounds (approximate) to avoid complex OverlayView
+          const bounds = replayMapInstance.getBounds();
+          if (bounds) {
+            const ne = bounds.getNorthEast();
+            const sw = bounds.getSouthWest();
+            const latSpan = ne.lat() - sw.lat();
+            const lngSpan = ne.lng() - sw.lng();
+            // Check if point is outside the safe inner box
+            // Note: This logic is simplified and assumes standard projection
+            const lat = typeof lastP.lat === 'function' ? lastP.lat() : lastP.lat;
+            const lng = typeof lastP.lng === 'function' ? lastP.lng() : lastP.lng;
+
+            if (lat > ne.lat() - latSpan * marginRatio || lat < sw.lat() + latSpan * marginRatio ||
+              lng > ne.lng() - lngSpan * marginRatio || lng < sw.lng() + lngSpan * marginRatio) {
+              shouldPan = true;
+              replayMapInstance.panTo(lastP);
+            }
+          } else {
+            replayMapInstance.setCenter(lastP); // Fallback if bounds valid yet
+          }
+        }
+
+        // No "else": If inside deadzone, do nothing (keep map static)
+      } catch (e) {
+        // Ignore errors during fast switching or map disposal
+        console.table(e);
+      }
+    }
+
+    // Update marker position
+    if (replayCurrentMarker && pointIndex > 0) {
+      const lastP = fullPath[Math.min(pointIndex - 1, totalPoints - 1)];
+      try {
+        if (currentMapType === 'amap') {
+          replayCurrentMarker.setPosition(lastP);
+        } else if (currentMapType === 'google') {
+          replayCurrentMarker.setPosition(lastP);
+        } else if (currentMapType === 'leaflet') {
+          replayCurrentMarker.setLatLng(lastP);
+        }
+      } catch (e) { }
+    }
+
+    if (pointIndex < totalPoints) {
+      replayAnimationId = requestAnimationFrame(step);
+    } else {
+      onComplete && onComplete();
+    }
+  }
+  step();
 }
 
 console.log('[Replay Module] animatePolyline 已加载');
@@ -204,6 +204,20 @@ function drawReplayOne() {
   if (replayIndex >= replayRecords.length) {
     replayStatusSpan.textContent = '完成';
     replayTimer = null; // Mark as done
+
+    // 播放结束后缩小到 level 4，提供整体视野
+    try {
+      if (currentMapType === 'amap') {
+        replayMapInstance.setZoom(4, false, 1500); // 1.5秒平滑缩放
+      } else if (currentMapType === 'google') {
+        replayMapInstance.setZoom(4);
+      } else if (currentMapType === 'leaflet') {
+        replayMapInstance.setZoom(4, { animate: true, duration: 1.5 });
+      }
+    } catch (e) {
+      console.error('Failed to zoom out after replay completion:', e);
+    }
+
     // 如果是逐年模式，进入下一年
     if (isSequentialMode) {
       setTimeout(() => proceedNextSequentialYear(), 500);
@@ -361,8 +375,8 @@ function drawReplayOne() {
           // Calculate zoom level difference
           const currentZoom = replayMapInstance.getZoom();
           const zoomDiff = Math.abs(targetZoom - currentZoom);
-          // Dynamic duration: 500ms base + 1000ms per zoom level
-          const zoomInDuration = 500 + (zoomDiff * 1000);
+          // Dynamic duration: 1000ms base + 1500ms per zoom level
+          const zoomInDuration = 1000 + (zoomDiff * 1500);
 
           // Slower zoom-in animation for smooth transition
           replayMapInstance.setCenter(fullPath[0]);
@@ -396,8 +410,8 @@ function drawReplayOne() {
           // Calculate zoom level difference
           const currentZoom = replayMapInstance.getZoom();
           const zoomDiff = Math.abs(targetZoom - currentZoom);
-          // Dynamic duration: 500ms base + 1000ms per zoom level
-          const zoomInDuration = 500 + (zoomDiff * 1000);
+          // Dynamic duration: 1000ms base + 1500ms per zoom level
+          const zoomInDuration = 1000 + (zoomDiff * 1500);
 
           // Slower zoom-in for smooth transition
           const pt = (Array.isArray(fullPath[0])) ?
@@ -437,8 +451,8 @@ function drawReplayOne() {
           // Calculate zoom level difference
           const currentZoom = replayMapInstance.getZoom();
           const zoomDiff = Math.abs(targetZoom - currentZoom);
-          // Dynamic duration: 0.5s base + 1.0s per zoom level
-          const zoomInDuration = 0.5 + (zoomDiff * 1.0);
+          // Dynamic duration: 1.0s base + 1.5s per zoom level
+          const zoomInDuration = 1.0 + (zoomDiff * 1.5);
 
           // Slower zoom-in animation for smooth transition
           replayMapInstance.setView(fullPath[0], targetZoom, { animate: true, duration: zoomInDuration });

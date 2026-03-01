@@ -82,8 +82,8 @@ body {
   /* 顶部栏高度 44+12+1=57 */
   left: 0;
   bottom: 0;
-  width: 250px;
-  /* 缩窄侧边栏，从300px改为250px */
+  width: 280px;
+  /* 缩窄侧边栏，从300px改为280px */
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-color);
   padding: 10px;
@@ -94,8 +94,8 @@ body {
 }
 
 #main {
-  margin-left: 250px;
-  /* 调整主区域左边距，从300px改为250px */
+  margin-left: 280px;
+  /* 调整主区域左边距，改为280px */
   margin-top: 57px;
   /* 顶部栏占位 57px */
   padding: 15px;
@@ -356,6 +356,95 @@ input[type=number] {
 }
 
 /* 地点标记功能已移除，相关按钮样式删除 */
+
+/* 线宽控制面板 */
+#lineWidthControl {
+  position: absolute;
+  right: 10px;
+  top: 40%;
+  transform: translateY(-50%);
+  background: var(--modal-bg);
+  padding: 8px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  z-index: 1000;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+#lineWidthControl label {
+  font-size: 12px;
+  color: var(--text-color);
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+#lineWidthControl input[type="range"] {
+  width: 80px;
+  cursor: pointer;
+}
+
+/* 线路编辑模式浮动栏 */
+#polylineEditBar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  animation: editBarSlideIn 0.3s ease;
+}
+
+@keyframes editBarSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+#polylineEditBar button {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#finishEditBtn {
+  background: #28a745;
+  color: #fff;
+}
+
+#finishEditBtn:hover {
+  background: #218838;
+}
+
+#cancelEditBtn {
+  background: #6c757d;
+  color: #fff;
+}
+
+#cancelEditBtn:hover {
+  background: #5a6268;
+}
 
 /* 年份图例样式 - 交互式图例 */
 #yearLegend {
@@ -1363,4 +1452,34 @@ td.highlight-cell {
 
 .highlight-row {
   animation: highlightPulse 5s ease-out;
+}
+
+/* 右键地图元素的自定义菜单 (Polyline Context Menu) */
+.context-menu {
+  position: fixed;
+  z-index: 10000;
+  background: var(--modal-bg);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 120px;
+  font-size: 13px;
+  color: var(--text-color);
+  display: block;
+  /* Managed by inline style in JS */
+}
+
+.context-menu .menu-item {
+  padding: 8px 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.context-menu .menu-item:hover {
+  background: rgba(13, 110, 253, 0.1);
+  color: var(--primary-color);
 }

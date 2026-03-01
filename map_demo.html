@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no, width=device-width">
+    <title>高德地图 + OSM 全球搜索</title>
+    <style>
+        body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; }
+        
+        #panel {
+            padding: 15px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+
+        #container { flex: 1; }
+        
+        #status {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+
+    <script type="text/javascript">
+        window._AMapSecurityConfig = {
+            securityJsCode: '5887c6857fbb16c5362a8406460fe2f1' // <--- 这里填安全密钥
+        }
+    </script>
+
+    <script type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=bda65a4e2e4934ce5eebb3f6888f7793"></script>
+</head>
+<body>
+
+<div id="panel">
+    <div style="flex:1">
+        <div style="display:flex; gap:10px;">
+            <input type="text" id="address" placeholder="试试搜国外地址：Eiffel Tower, Paris" value="Eiffel Tower">
+            <button id="searchBtn" onclick="searchGlobal()">搜索全球</button>
+        </div>
+        <div id="status">数据来源: OpenStreetMap | 展示: 高德地图</div>
+    </div>
+</div>
+
+<div id="container"></div>
+
+<script type="text/javascript">
+    // --- 初始化地图 ---
+    var map = new AMap.Map("container", {
+        resizeEnable: true,
+        zoom: 3,
+        center: [116.397428, 39.90923] // 默认北京
+    });
+
+    var marker = new AMap.Marker(); // 创建一个标记点
+
+    // --- 核心逻辑 ---
+    function searchGlobal() {
+        var query = document.getElementById('address').value;
+        var btn = document.getElementById('searchBtn');
+        var status = document.getElementById('status');
+
+        if (!query) return;
+
+        // 锁定按钮防止重复点击
+        btn.disabled = true;
+        btn.innerText = "搜索中...";
+        status.innerText = "正在请求 OpenStreetMap 数据...";
+
+        // 1. 请求 OSM 的 Nominatim 接口 (免费，返回 WGS84 坐标)
+        // 注意：User-Agent 是为了遵守 OSM 的使用规则，实际浏览器请求中由浏览器控制
+        var url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`;
+
+        fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                if (data.length === 0) {
+                    throw new Error("未找到地址，请尝试使用英文名称");
+                }
+
+                // 获取 WGS84 坐标
+                var wgsLng = parseFloat(data[0].lon);
+                var wgsLat = parseFloat(data[0].lat);
+                var displayName = data[0].display_name;
+
+                status.innerText = `找到: ${displayName} (正在转换坐标...)`;
+
+                // 2. 坐标转换 (WGS84 -> GCJ02)
+                // 高德必须使用 GCJ02 才能准确显示，特别是中国境内。
+                // 即使是国外，使用 convertFrom 也是安全的，它会处理得很好。
+                AMap.convertFrom([wgsLng, wgsLat], 'gps', function (status, result) {
+                    if (result.info === 'ok') {
+                        var finalLngLat = result.locations[0]; // 转换后的高德坐标
+
+                        // 3. 上图显示
+                        marker.setPosition(finalLngLat);
+                        marker.setLabel({
+                            content: `<div style="padding:5px; background:#fff; border:1px solid #ccc;">${data[0].name || query}</div>`,
+                            direction: 'top'
+                        });
+                        map.add(marker);
+                        map.setZoomAndCenter(14, finalLngLat); // 放大并移动过去
+                        
+                        document.getElementById('status').innerText = `已定位: ${data[0].name || query}`;
+                    } else {
+                        console.error("坐标转换失败", result);
+                    }
+                });
+            })
+            .catch(err => {
+                alert(err.message || "请求出错");
+                console.error(err);
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerText = "搜索全球";
+            });
+    }
+</script>
+</body>
+</html>

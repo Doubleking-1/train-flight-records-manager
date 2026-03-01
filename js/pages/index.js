@@ -181,9 +181,9 @@ function initMaps() {
     try {
       const isDark = document.body.classList.contains('dark');
       const mapStyle = isDark ? API_CONFIG.amap.styles.dark : API_CONFIG.amap.styles.light;
-      trainMap = new AMap.Map('trainMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false, mapStyle });
-      planeMap = new AMap.Map('planeMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false, mapStyle });
-      combinedMap = new AMap.Map('combinedMap', { viewMode: '2D', zoom: 4, center: [105, 35], scrollWheel: false, mapStyle });
+      trainMap = new AMap.Map('trainMap', { viewMode: '2D', zoom: 3, center: [105, 35], scrollWheel: false, mapStyle });
+      planeMap = new AMap.Map('planeMap', { viewMode: '2D', zoom: 3, center: [105, 35], scrollWheel: false, mapStyle });
+      combinedMap = new AMap.Map('combinedMap', { viewMode: '2D', zoom: 3, center: [105, 35], scrollWheel: false, mapStyle });
       console.log('✅ 高德地图初始化成功');
     } catch (e) {
       console.error('❌ 高德地图初始化失败:', e);
@@ -201,7 +201,7 @@ function initMaps() {
     }
     try {
       const isDark = document.body.classList.contains('dark');
-      const options = { ...API_CONFIG.getGoogleMapOptions(isDark), zoom: 4, center: { lat: 35, lng: 105 } };
+      const options = { ...API_CONFIG.getGoogleMapOptions(isDark), zoom: 3, center: { lat: 35, lng: 105 } };
       trainMap = new google.maps.Map(document.getElementById('trainMap'), options);
       planeMap = new google.maps.Map(document.getElementById('planeMap'), options);
       combinedMap = new google.maps.Map(document.getElementById('combinedMap'), options);
@@ -212,19 +212,19 @@ function initMaps() {
   } else if (currentMapType === 'leaflet') {
     try {
       const isDark = document.body.classList.contains('dark');
-      trainMap = L.map('trainMap', { center: [35, 105], zoom: 4, scrollWheelZoom: false });
+      trainMap = L.map('trainMap', { center: [35, 105], zoom: 3, scrollWheelZoom: false });
       L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 20
       }).addTo(trainMap);
       if (isDark) trainMap.getContainer().style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)';
 
-      planeMap = L.map('planeMap', { center: [35, 105], zoom: 4, scrollWheelZoom: false });
+      planeMap = L.map('planeMap', { center: [35, 105], zoom: 3, scrollWheelZoom: false });
       L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 20
       }).addTo(planeMap);
       if (isDark) planeMap.getContainer().style.filter = 'invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%)';
 
-      combinedMap = L.map('combinedMap', { center: [35, 105], zoom: 4, scrollWheelZoom: false });
+      combinedMap = L.map('combinedMap', { center: [35, 105], zoom: 3, scrollWheelZoom: false });
       L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '© OpenStreetMap contributors © CARTO', subdomains: 'abcd', maxZoom: 20
       }).addTo(combinedMap);
@@ -248,15 +248,15 @@ function drawExisting() {
         try {
           if (currentMapType === 'amap') {
             const path = r.pathWGS.map(p => [p[0], p[1]]);
-            const poly = new AMap.Polyline({ path, strokeColor: color, strokeOpacity: 0.85, strokeWeight: 2 });
+            const poly = new AMap.Polyline({ path, strokeColor: color, strokeOpacity: (window.mapLineOpacity || 0.9), strokeWeight: (window.mapLineWidth || 2) });
             map.add(poly);
           } else if (currentMapType === 'google') {
             const path = r.pathWGS.map(p => ({ lat: p[1], lng: p[0] }));
-            const poly = new google.maps.Polyline({ path, strokeColor: color, strokeOpacity: 0.85, strokeWeight: 2 });
+            const poly = new google.maps.Polyline({ path, strokeColor: color, strokeOpacity: (window.mapLineOpacity || 0.9), strokeWeight: (window.mapLineWidth || 2) });
             poly.setMap(map);
           } else if (currentMapType === 'leaflet') {
             const path = r.pathWGS.map(p => [p[1], p[0]]);
-            const poly = L.polyline(path, { color, opacity: 0.85, weight: 2 });
+            const poly = L.polyline(path, { color, opacity: (window.mapLineOpacity || 0.9), weight: (window.mapLineWidth || 2) });
             poly.addTo(map);
           }
         } catch (e) { console.warn('绘制失败:', e); }
@@ -353,7 +353,6 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   // 恢复全部
   $('restoreAllBtn').addEventListener('click', () => {
-    if (!confirm('恢复将覆盖当前火车/飞机所有记录与缓存，继续？')) return;
     $('restoreAllFile').click();
   });
   $('restoreAllFile').addEventListener('change', e => {
@@ -362,9 +361,27 @@ window.addEventListener('DOMContentLoaded', () => {
     reader.onload = ev => {
       try {
         const data = JSON.parse(ev.target.result);
-        if (!data || (!Array.isArray(data.trains) && !Array.isArray(data.planes))) { alert('文件格式不正确'); return; }
-        localStorage.setItem(TRAIN_KEY, JSON.stringify(data.trains || []));
-        localStorage.setItem(PLANE_KEY, JSON.stringify(data.planes || []));
+        if (!data || (!Array.isArray(data.trains) && !Array.isArray(data.planes) && !Array.isArray(data.records))) {
+          alert('文件格式不正确：未找到 trains/planes/records 字段');
+          return;
+        }
+        if (!confirm('恢复将覆盖当前火车/飞机所有记录与缓存，确定继续？')) return;
+
+        // 兼容管理页备份格式（含 records 字段，单实体）
+        if (Array.isArray(data.records) && !data.trains && !data.planes) {
+          // 判断实体类型
+          const entity = (data.settings && data.settings.entity) || 'train';
+          if (entity === 'plane') {
+            localStorage.setItem(PLANE_KEY, JSON.stringify(data.records));
+          } else {
+            localStorage.setItem(TRAIN_KEY, JSON.stringify(data.records));
+          }
+        } else {
+          // 主页备份格式（含 trains + planes）
+          localStorage.setItem(TRAIN_KEY, JSON.stringify(data.trains || []));
+          localStorage.setItem(PLANE_KEY, JSON.stringify(data.planes || []));
+        }
+
         if (data.geocodeCache && typeof data.geocodeCache === 'object') {
           localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(data.geocodeCache));
         }
@@ -375,7 +392,10 @@ window.addEventListener('DOMContentLoaded', () => {
         applyThemeUI();
         updateSummary(); initMaps();
         $('statusPill').textContent = '恢复完成';
-        alert('恢复完成：火车 ' + (data.trains ? data.trains.length : 0) + ' 条，飞机 ' + (data.planes ? data.planes.length : 0) + ' 条');
+
+        const trainCount = data.trains ? data.trains.length : (data.records && (!data.settings || data.settings.entity !== 'plane') ? data.records.length : 0);
+        const planeCount = data.planes ? data.planes.length : (data.records && data.settings && data.settings.entity === 'plane' ? data.records.length : 0);
+        alert('恢复完成：火车 ' + trainCount + ' 条，飞机 ' + planeCount + ' 条');
       } catch (err) {
         alert('恢复失败: ' + err.message);
       }
@@ -420,15 +440,33 @@ window.addEventListener('DOMContentLoaded', () => {
         featuresHelpOverlay.style.display = 'none';
       }
     });
-    // Close on ESC key
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && featuresHelpOverlay.style.display === 'flex') {
-        featuresHelpOverlay.style.display = 'none';
-      }
-    });
   }
   // Initialize Cloud Sync
   const cloudSync = new CloudSync();
+
+  // ===================== Global Unified ESC Handler =====================
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+
+    const overlays = [
+      { id: 'featuresHelpOverlay' },
+      { id: 'geminiQAModalOverlay', closeBtn: 'geminiQACloseBtn' },
+      { id: 'aiConfigModalOverlay', closeBtn: 'aiConfigCancelBtn' },
+      { id: 'cloudSettingsModalOverlay', closeBtn: 'cloudSettingsCancelBtn' }
+    ];
+
+    overlays.forEach(overlay => {
+      const el = document.getElementById(overlay.id);
+      if (el && (el.style.display === 'flex' || el.style.display === 'block')) {
+        if (overlay.closeBtn) {
+          const btn = document.getElementById(overlay.closeBtn);
+          if (btn) btn.click();
+        } else {
+          el.style.display = 'none';
+        }
+      }
+    });
+  });
 });
 
 // ===================== Gemini Q&A Feature =====================
@@ -737,12 +775,8 @@ ${dataContext}
   }
 }
 
-// Close on ESC
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && geminiQAModalOverlay.style.display === 'flex') {
-    geminiQAModalOverlay.style.display = 'none';
-  }
-});
+// Close on ESC (Removed: Handled by global listener in DOMContentLoaded)
+
 
 function appendMessage(role, content) {
   const msgDiv = document.createElement('div');

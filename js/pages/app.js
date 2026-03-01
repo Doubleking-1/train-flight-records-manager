@@ -19,9 +19,139 @@ let leafletMap; // Leaflet 地图实例
 let googleMapsLoaded = false; // 谷歌地图API加载状态
 let selectedYears = new Set(); // 选中的年份集合
 let isUserDeselectedAll = false; // 用户是否主动执行了"全不选"
+window.mapLineWidth = 2; // 全局地图线宽控制
+window.mapLineOpacity = 0.9; // 全局地图线条透明度控制
+
+// === 线路编辑模式 ===
+window.currentPolylineEditor = null; // 当前编辑器实例
+window._editingPolyline = null;      // 当前编辑中的 polyline
+window._editingRecord = null;        // 当前编辑中的 record
+window._editingTr = null;            // 当前编辑中的 tr
+
 
 // 新增：地理编码缓存
 let geocodeCache = {};
+
+// 自定义地址管理 (优先级高于 API)
+window.customAddresses = {};
+
+// 从 localStorage 加载自定义地址
+function loadCustomAddresses() {
+  try {
+    const entityKey = currentEntity ? `custom_addresses_${currentEntity}` : 'custom_addresses';
+    const saved = localStorage.getItem(entityKey);
+    if (saved) {
+      window.customAddresses = JSON.parse(saved);
+    } else {
+      // 迁移旧数据
+      const oldSaved = localStorage.getItem('custom_addresses');
+      if (oldSaved) {
+        window.customAddresses = JSON.parse(oldSaved);
+        saveCustomAddresses(); // 保存到新的由实体区分的 key 中
+      } else {
+        window.customAddresses = {};
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load custom addresses', e);
+    window.customAddresses = {};
+  }
+}
+
+// 保存自定义地址到 localStorage
+function saveCustomAddresses() {
+  const entityKey = currentEntity ? `custom_addresses_${currentEntity}` : 'custom_addresses';
+  localStorage.setItem(entityKey, JSON.stringify(window.customAddresses));
+}
+
+// 渲染自定义地址列表
+function renderAddressManagerList() {
+  const tbody = document.getElementById('addressManagerTbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const entries = Object.entries(window.customAddresses);
+  if (entries.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:var(--text-color); opacity:0.6;">暂无自定义坐标。</td></tr>';
+    return;
+  }
+
+  // 根据地名拼音或直接字符串排序，让列表更好看
+  entries.sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+
+  entries.forEach(([name, coords]) => {
+    const tr = document.createElement('tr');
+    // 添加 hover 背景色提升交互感
+    tr.style.transition = 'background-color 0.2s';
+    tr.onmouseover = () => tr.style.backgroundColor = 'var(--hover-bg)';
+    tr.onmouseout = () => tr.style.backgroundColor = 'transparent';
+
+    const wgsLng = coords[0];
+    const wgsLat = coords[1];
+
+    // Check if within China to convert WGS-84 to GCJ-02
+    let gcjLng = '-', gcjLat = '-';
+    if (typeof isInChina === 'function' && typeof wgs84ToGcj02 === 'function' && isInChina(wgsLng, wgsLat)) {
+      const gcjCoords = wgs84ToGcj02(wgsLng, wgsLat);
+      gcjLng = gcjCoords[0].toFixed(6);
+      gcjLat = gcjCoords[1].toFixed(6);
+    }
+
+    tr.innerHTML = `
+      <td style="padding:10px 16px; border-bottom:1px solid var(--border-color);">${name}</td>
+      <td style="padding:10px 16px; border-bottom:1px solid var(--border-color); font-family:monospace; color:#28a745;">${wgsLng.toFixed(6)}</td>
+      <td style="padding:10px 16px; border-bottom:1px solid var(--border-color); font-family:monospace; color:#28a745;">${wgsLat.toFixed(6)}</td>
+      <td style="padding:10px 16px; border-bottom:1px solid var(--border-color); font-family:monospace; color:#0d6efd;">${gcjLng}</td>
+      <td style="padding:10px 16px; border-bottom:1px solid var(--border-color); font-family:monospace; color:#0d6efd;">${gcjLat}</td>
+      <td style="padding:10px 16px; border-bottom:1px solid var(--border-color); text-align:center;">
+        <div style="display:flex; justify-content:center; gap:8px;">
+          <button type="button" class="edit-addr-btn" data-name="${name}" style="background:none; border:none; cursor:pointer; font-size:15px; transition:transform 0.1s;" title="编辑">✏️</button>
+          <button type="button" class="del-addr-btn" data-name="${name}" style="background:none; border:none; cursor:pointer; font-size:15px; transition:transform 0.1s;" title="删除">🗑️</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  // 绑定编辑事件
+  tbody.querySelectorAll('.edit-addr-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const name = e.currentTarget.getAttribute('data-name');
+      const coords = window.customAddresses[name];
+      if (coords) {
+        document.getElementById('addAddrName').value = name;
+        document.getElementById('addAddrLng').value = coords[0];
+        document.getElementById('addAddrLat').value = coords[1];
+        document.getElementById('addrFormTitle').textContent = '📝 编辑坐标 (点击保存生效)';
+        document.getElementById('addAddrName').focus();
+
+        // 强制复位到 WGS-84 视图以反映数据库真实存的数值
+        const wgsRadio = document.querySelector('input[name="coordType"][value="wgs84"]');
+        if (wgsRadio) wgsRadio.checked = true;
+        window._currentCoordType = 'wgs84';
+      }
+    });
+  });
+
+  // 绑定删除事件
+  tbody.querySelectorAll('.del-addr-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const name = e.currentTarget.getAttribute('data-name');
+      if (confirm(`确定删除 ${name} 的自定义坐标吗？`)) {
+        delete window.customAddresses[name];
+        saveCustomAddresses();
+        renderAddressManagerList();
+      }
+    });
+  });
+}
+
+// 初始化加载
+loadCustomAddresses();
 
 // 表格列索引常量，避免魔法数字
 const COL = {
@@ -104,16 +234,9 @@ const cloudBinIdInput = document.getElementById('cloudBinId');
 const cloudSettingsSaveBtn = document.getElementById('cloudSettingsSaveBtn');
 const cloudSettingsCancelBtn = document.getElementById('cloudSettingsCancelBtn');
 
-// Gemini Q&A Elements
-const askGeminiBtn = document.getElementById('askGeminiBtn');
-const geminiQAModalOverlay = document.getElementById('geminiQAModalOverlay');
-const geminiQACloseBtn = document.getElementById('geminiQACloseBtn');
-const geminiQAInput = document.getElementById('geminiQAInput');
-const geminiQASendBtn = document.getElementById('geminiQASendBtn');
-const geminiQAChatHistory = document.getElementById('geminiQAChatHistory');
+// Gemini Q&A Elements → 已迁移到 js/modules/gemini_qa.js
 
-// 图表实例
-let tripsChart, distanceChart, costChart, durationChart, bureauChart, typeChart;
+// 图表实例 → 已迁移到 js/modules/charts.js
 
 // Sorting State
 let sortState = {
@@ -814,20 +937,18 @@ function buildDurationSelects(initialHHMM = '') {
     initH = Math.min(80, Math.max(0, parseInt(m[1]) || 0));
     initM = Math.min(59, Math.max(0, parseInt(m[2]) || 0));
   }
-  const hourOptions = Array.from({ length: 81 }, (_, h) => `<option value="${h}" ${h === initH ? 'selected' : ''}>${String(h).padStart(2, '0')}</option>`).join('');
-  const minuteOptions = Array.from({ length: 60 }, (_, mm) => `<option value="${mm}" ${mm === initM ? 'selected' : ''}>${String(mm).padStart(2, '0')}</option>`).join('');
   return `
-        <span class="duration-editor" title="时长 (HH:MM)">
-          <select class="inline-select dur-hour" aria-label="小时">${hourOptions}</select>
-          :
-          <select class="inline-select dur-min" aria-label="分钟">${minuteOptions}</select>
+        <span class="duration-editor" title="时长 (HH:MM)" style="display:inline-flex; align-items:center; gap:2px;">
+          <input type="number" class="inline-input dur-hour" min="0" max="99" style="width:36px; padding:2px; text-align:center;" value="${initH}" aria-label="小时">
+          <span style="opacity:0.6; font-weight:bold;">:</span>
+          <input type="number" class="inline-input dur-min" min="0" max="59" style="width:36px; padding:2px; text-align:center;" value="${initM}" aria-label="分钟">
         </span>
       `;
 }
 
 function readDurationFromRowCell(td) {
-  const hSel = td.querySelector('select.dur-hour');
-  const mSel = td.querySelector('select.dur-min');
+  const hSel = td.querySelector('.dur-hour');
+  const mSel = td.querySelector('.dur-min');
   if (hSel && mSel) {
     const h = String(parseInt(hSel.value) || 0).padStart(2, '0');
     const m = String(parseInt(mSel.value) || 0).padStart(2, '0');
@@ -1062,6 +1183,11 @@ function updateYearLegend() {
       console.log('全选后selectedYears:', Array.from(selectedYears));
       updateYearLegend();
       updatePathVisibility();
+      updateStats();
+      if (typeof updateAllTimeSummary === 'function') updateAllTimeSummary();
+      if (typeof createYearlyCharts === 'function') createYearlyCharts();
+      if (typeof createBureauChart === 'function') createBureauChart();
+      if (typeof createTypeChart === 'function') createTypeChart();
     };
 
     const deselectAllBtn = document.createElement('button');
@@ -1078,6 +1204,11 @@ function updateYearLegend() {
       updatePathVisibility();
       // 再更新图例显示（这会重新生成DOM并正确设置复选框状态）
       updateYearLegend();
+      updateStats();
+      if (typeof updateAllTimeSummary === 'function') updateAllTimeSummary();
+      if (typeof createYearlyCharts === 'function') createYearlyCharts();
+      if (typeof createBureauChart === 'function') createBureauChart();
+      if (typeof createTypeChart === 'function') createTypeChart();
     };
 
     controlsDiv.appendChild(selectAllBtn);
@@ -1136,7 +1267,11 @@ function updateRouteHeatmap(filterYear = null) {
   // 根据年份筛选记录
   const filteredRecords = filterYear
     ? records.filter(r => r.date && r.date.substring(0, 4) === filterYear)
-    : records;
+    : records.filter(r => {
+      if (typeof isUserDeselectedAll !== 'undefined' && isUserDeselectedAll) return false;
+      const year = r.date ? r.date.substring(0, 4) : new Date().getFullYear().toString();
+      return selectedYears.has(year);
+    });
 
   filteredRecords.forEach(record => {
     const route = `${record.startCity || record.startStation} → ${record.endCity || record.endStation}`;
@@ -1186,7 +1321,11 @@ function updateRegionStats(filterYear = null) {
   // 根据年份筛选记录
   const filteredRecords = filterYear
     ? records.filter(r => r.date && r.date.substring(0, 4) === filterYear)
-    : records;
+    : records.filter(r => {
+      if (typeof isUserDeselectedAll !== 'undefined' && isUserDeselectedAll) return false;
+      const year = r.date ? r.date.substring(0, 4) : new Date().getFullYear().toString();
+      return selectedYears.has(year);
+    });
 
   // 仅统计终点城市（到访城市）
   filteredRecords.forEach(record => {
@@ -1245,483 +1384,74 @@ window.toggleYearVisibility = function (year) {
   }
   updateYearLegend();
   updatePathVisibility();
+  updateStats();
+  if (typeof updateAllTimeSummary === 'function') updateAllTimeSummary();
+  if (typeof createYearlyCharts === 'function') createYearlyCharts();
+  if (typeof createBureauChart === 'function') createBureauChart();
+  if (typeof createTypeChart === 'function') createTypeChart();
 };
 
 // 更新路径可见性
 function updatePathVisibility() {
   console.log(`更新路径可见性，选中年份: [${Array.from(selectedYears).join(', ')}]`);
 
+  // 先更新表格行的可见性（同步）
   Array.from(tbody.children).forEach((tr, index) => {
-    const record = records[index];
+    const record = tr._record || records[index];
     if (!record) return;
-
     const year = record.date ? record.date.substring(0, 4) : new Date().getFullYear().toString();
-    const shouldShow = selectedYears.has(year);
-
-    // 更新覆盖物的可见性
-    if (tr._overlays) {
-      tr._overlays.forEach(overlay => {
-        if (currentMapType === 'amap') {
-          if (overlay.getPath && overlay.setOptions) {
-            // 高德地图的线条
-            overlay.setOptions({
-              strokeOpacity: shouldShow ? 0.9 : 0,
-              zIndex: shouldShow ? 100 : -1
-            });
-          } else if (overlay.setText || overlay.getText) {
-            // 高德地图的年份标签
-            if (shouldShow) {
-              overlay.show();
-            } else {
-              overlay.hide();
-            }
-          }
-        } else if (currentMapType === 'google') {
-          if (overlay.getPath && overlay.setOptions) {
-            // 谷歌地图的线条
-            overlay.setOptions({
-              strokeOpacity: shouldShow ? 0.9 : 0,
-              zIndex: shouldShow ? 100 : -1
-            });
-          } else if (overlay.getIcon && overlay.setVisible) {
-            // 谷歌地图的年份标签（Marker）
-            overlay.setVisible(shouldShow);
-          }
-        } else if (currentMapType === 'leaflet') {
-          // Leaflet: setStyle (path) or setOpacity (marker)
-          if (overlay instanceof L.Polyline) {
-            overlay.setStyle({
-              opacity: shouldShow ? 0.9 : 0,
-              interactive: shouldShow // 隐藏时不响应交互
-            });
-            // 如果不想让它挡住别的，还需要 bringToBack/Front
-            if (shouldShow) overlay.bringToFront(); else overlay.bringToBack();
-          } else if (overlay instanceof L.Marker) { // 我们的文字标签用Marker divIcon
-            overlay.setOpacity(shouldShow ? 1 : 0);
-          }
-        }
-      });
-    }
+    const shouldShow = isUserDeselectedAll ? false : selectedYears.has(year);
+    tr.style.display = shouldShow ? '' : 'none';
   });
 
-  console.log(`路径可见性更新完成`);
+  // === 清除地图上所有覆盖物 ===
+  try {
+    if (currentMapType === 'amap' && amapInstance) {
+      amapInstance.clearMap();
+    } else if (currentMapType === 'google') {
+      Array.from(tbody.children).forEach(tr => {
+        if (tr._overlays) tr._overlays.forEach(o => { try { if (o.setMap) o.setMap(null); } catch (_) { } });
+      });
+    } else if (currentMapType === 'leaflet' && leafletMap) {
+      Array.from(tbody.children).forEach(tr => {
+        if (tr._overlays) tr._overlays.forEach(o => { try { if (leafletMap.hasLayer(o)) leafletMap.removeLayer(o); } catch (_) { } });
+      });
+    }
+  } catch (e) { console.warn('清除地图覆盖物失败:', e); }
+
+  // === 延迟重新添加选中年份的覆盖物（让地图引擎先完成清除渲染） ===
+  setTimeout(() => {
+    const overlaysToAdd = [];
+    Array.from(tbody.children).forEach((tr, index) => {
+      const record = tr._record || records[index];
+      if (!record) return;
+      const year = record.date ? record.date.substring(0, 4) : new Date().getFullYear().toString();
+      const shouldShow = isUserDeselectedAll ? false : selectedYears.has(year);
+
+      if (shouldShow && tr._overlays) {
+        tr._overlays.forEach(overlay => overlaysToAdd.push(overlay));
+      }
+    });
+
+    // 批量添加覆盖物（AMap 支持数组批量添加）
+    try {
+      if (currentMapType === 'amap' && amapInstance && overlaysToAdd.length > 0) {
+        amapInstance.add(overlaysToAdd);
+      } else if (currentMapType === 'google') {
+        overlaysToAdd.forEach(o => { try { if (o.setMap) o.setMap(googleMap); } catch (_) { } });
+      } else if (currentMapType === 'leaflet' && leafletMap) {
+        overlaysToAdd.forEach(o => { try { if (!leafletMap.hasLayer(o)) o.addTo(leafletMap); } catch (_) { } });
+      }
+    } catch (e) { console.warn('重新添加覆盖物失败:', e); }
+
+    console.log(`路径可见性更新完成，已添加 ${overlaysToAdd.length} 个覆盖物`);
+  }, 50);
 }
 
 // 创建年度统计图表
-function createYearlyCharts(mode = 'yearly', selectedYear = null) {
-  if (records.length === 0) return;
-
-  let labels, trips, distances, costs, durations;
-
-  if (mode === 'monthly' && selectedYear) {
-    // 月度模式：显示选定年份的12个月的统计
-    const yearRecords = records.filter(r => r.date && r.date.substring(0, 4) === selectedYear);
-
-    // 初始化12个月的数据
-    const monthlyData = Array.from({ length: 12 }, () => ({
-      trips: 0,
-      distance: 0,
-      cost: 0,
-      duration: 0
-    }));
-
-    // 统计每个月的数据
-    yearRecords.forEach(record => {
-      const month = new Date(record.date).getMonth(); // 0-11
-      monthlyData[month].trips++;
-      monthlyData[month].distance += record.distance || 0;
-      monthlyData[month].cost += record.cost || 0;
-      monthlyData[month].duration += parseDurationToMinutes(record.duration);
-    });
-
-    // 生成标签和数据
-    labels = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
-    trips = monthlyData.map(m => m.trips);
-    distances = monthlyData.map(m => m.distance);
-    costs = monthlyData.map(m => m.cost);
-    durations = monthlyData.map(m => Math.round(m.duration / 60)); // 转换为小时
-  } else {
-    // 年度模式：显示所有年份的统计
-    const yearlyData = {};
-    records.forEach(record => {
-      const year = record.date ? record.date.substring(0, 4) : new Date().getFullYear().toString();
-      if (!yearlyData[year]) {
-        yearlyData[year] = {
-          trips: 0,
-          distance: 0,
-          cost: 0,
-          duration: 0 // 以分钟为单位
-        };
-      }
-      yearlyData[year].trips++;
-      yearlyData[year].distance += record.distance || 0;
-      yearlyData[year].cost += record.cost || 0;
-      yearlyData[year].duration += parseDurationToMinutes(record.duration);
-    });
-
-    // 排序年份
-    const years = Object.keys(yearlyData).sort((a, b) => parseInt(a) - parseInt(b));
-    labels = years;
-    trips = years.map(year => yearlyData[year].trips);
-    distances = years.map(year => yearlyData[year].distance);
-    costs = years.map(year => yearlyData[year].cost);
-    durations = years.map(year => Math.round(yearlyData[year].duration / 60)); // 转换为小时
-  }
-
-  // 获取当前主题的文字颜色
-  const isDark = document.body.classList.contains('dark');
-  const textColor = isDark ? '#e0e0e0' : '#212529';
-
-  // 通用图表配置
-  const commonOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    layout: {
-      padding: {
-        bottom: 20 // 防止年份标签被截断
-      }
-    },
-    plugins: {
-      legend: {
-        display: false
-      }
-    },
-    scales: {
-      x: {
-        grid: {
-          display: false // 移除网格线
-        },
-        ticks: {
-          color: textColor,
-          padding: 5, // 减少标签与轴的间距
-          maxRotation: 0, // 强制水平显示
-          autoSkip: false // 尽可能显示所有年份
-        }
-      },
-      y: {
-        beginAtZero: true,
-        grid: {
-          display: false // 移除网格线
-        },
-        ticks: {
-          color: textColor
-        }
-      }
-    }
-  };
-
-  // 销毁已存在的图表
-  if (tripsChart) tripsChart.destroy();
-  if (distanceChart) distanceChart.destroy();
-  if (costChart) costChart.destroy();
-  if (durationChart) durationChart.destroy();
-
-  // 乘车次数图表
-  const tripsCtx = document.getElementById('tripsChart').getContext('2d');
-  tripsChart = new Chart(tripsCtx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        data: trips,
-        backgroundColor: 'rgba(54, 162, 235, 0.6)',
-        borderColor: 'rgba(54, 162, 235, 1)',
-        borderWidth: 1
-      }]
-    },
-    options: commonOptions
-  });
-
-  // 里程图表
-  const distanceCtx = document.getElementById('distanceChart').getContext('2d');
-  distanceChart = new Chart(distanceCtx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        data: distances,
-        backgroundColor: 'rgba(255, 99, 132, 0.6)',
-        borderColor: 'rgba(255, 99, 132, 1)',
-        borderWidth: 1
-      }]
-    },
-    options: commonOptions
-  });
-
-  // 花费图表
-  const costCtx = document.getElementById('costChart').getContext('2d');
-  costChart = new Chart(costCtx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        data: costs,
-        backgroundColor: 'rgba(255, 206, 86, 0.6)',
-        borderColor: 'rgba(255, 206, 86, 1)',
-        borderWidth: 1
-      }]
-    },
-    options: commonOptions
-  });
-
-  // 时长图表
-  const durationCtx = document.getElementById('durationChart').getContext('2d');
-  durationChart = new Chart(durationCtx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        data: durations,
-        backgroundColor: 'rgba(75, 192, 192, 0.6)',
-        borderColor: 'rgba(75, 192, 192, 1)',
-        borderWidth: 1
-      }]
-    },
-    options: commonOptions
-  });
-}
-
-// Create bureau statistics chart
-function createBureauChart(selectedYear = null) {
-  if (records.length === 0) {
-    if (bureauChart) bureauChart.destroy();
-    return;
-  }
-
-  // Update chart title based on entity type
-  const cfg = getEntityConfig();
-  const titleElement = document.getElementById('bureauChartTitle');
-  if (titleElement) {
-    titleElement.textContent = currentEntity === 'plane' ? '航空公司统计' : '铁路局统计';
-  }
-
-  // Filter records by year if selectedYear is provided
-  const filteredRecords = selectedYear
-    ? records.filter(r => r.date && r.date.substring(0, 4) === selectedYear)
-    : records;
-
-  // Aggregate by appropriate field based on entity type
-  // For trains: bureau field = railway bureau (铁路局)
-  // For planes: trainType field = airline (航空公司), bureau field = aircraft type (机型)
-  const fieldName = currentEntity === 'plane' ? 'trainType' : 'bureau';
-  const bureauData = {};
-  filteredRecords.forEach(record => {
-    const value = record[fieldName] || '未知';
-    if (!bureauData[value]) {
-      bureauData[value] = 0;
-    }
-    bureauData[value]++;
-  });
-
-  // Sort by count descending
-  const sortedBureaus = Object.entries(bureauData)
-    .sort((a, b) => b[1] - a[1]);
-
-  const labels = sortedBureaus.map(([bureau]) => bureau);
-  const data = sortedBureaus.map(([, count]) => count);
-
-  // Get theme color
-  const isDark = document.body.classList.contains('dark');
-  const textColor = isDark ? '#e0e0e0' : '#212529';
-
-  // Create color array - highlight 'unknown' with different color
-  const backgroundColors = labels.map(label =>
-    label === '未知' ? 'rgba(220, 53, 69, 0.6)' : 'rgba(153, 102, 255, 0.6)'
-  );
-  const borderColors = labels.map(label =>
-    label === '未知' ? 'rgba(220, 53, 69, 1)' : 'rgba(153, 102, 255, 1)'
-  );
-
-  // Destroy existing chart
-  if (bureauChart) bureauChart.destroy();
-
-  // Create chart
-  const bureauCtx = document.getElementById('bureauChart').getContext('2d');
-  bureauChart = new Chart(bureauCtx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        data: data,
-        backgroundColor: backgroundColors,
-        borderColor: borderColors,
-        borderWidth: 1
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      layout: {
-        padding: {
-          bottom: 20
-        }
-      },
-      plugins: {
-        legend: {
-          display: false
-        }
-      },
-      scales: {
-        x: {
-          grid: {
-            display: false
-          },
-          ticks: {
-            color: textColor,
-            padding: 5,
-            maxRotation: 45,
-            minRotation: 0,
-            autoSkip: false
-          }
-        },
-        y: {
-          beginAtZero: true,
-          grid: {
-            display: false
-          },
-          ticks: {
-            color: textColor,
-            stepSize: 1
-          }
-        }
-      }
-    }
-  });
-}
-
-// Create type statistics chart (train type for trains, aircraft type for planes)
-function createTypeChart(selectedYear = null) {
-  if (records.length === 0) {
-    if (typeChart) typeChart.destroy();
-    return;
-  }
-
-  // Update chart title based on entity type
-  const titleElement = document.getElementById('typeChartTitle');
-  if (titleElement) {
-    titleElement.textContent = currentEntity === 'plane' ? '机型统计' : '车型统计';
-  }
-
-  // Filter records by year if selectedYear is provided
-  const filteredRecords = selectedYear
-    ? records.filter(r => r.date && r.date.substring(0, 4) === selectedYear)
-    : records;
-
-  // Aggregate by appropriate field based on entity type
-  // For trains: trainType field = train type (车型号)
-  // For planes: bureau field = aircraft type (机型)
-  const fieldName = currentEntity === 'plane' ? 'bureau' : 'trainType';
-  const typeData = {};
-  filteredRecords.forEach(record => {
-    const value = record[fieldName] || '未知';
-    if (!typeData[value]) {
-      typeData[value] = 0;
-    }
-    typeData[value]++;
-  });
-
-  // Sort by count descending
-  const sortedTypes = Object.entries(typeData)
-    .sort((a, b) => b[1] - a[1]);
-
-  const labels = sortedTypes.map(([type]) => type);
-  const data = sortedTypes.map(([, count]) => count);
-
-  // Get theme color
-  const isDark = document.body.classList.contains('dark');
-  const textColor = isDark ? '#e0e0e0' : '#212529';
-
-  // Create color array - highlight 'unknown' with different color
-  const backgroundColors = labels.map(label =>
-    label === '未知' ? 'rgba(220, 53, 69, 0.6)' : 'rgba(255, 159, 64, 0.6)'
-  );
-  const borderColors = labels.map(label =>
-    label === '未知' ? 'rgba(220, 53, 69, 1)' : 'rgba(255, 159, 64, 1)'
-  );
-
-  // Destroy existing chart
-  if (typeChart) typeChart.destroy();
-
-  // Create chart
-  const typeCtx = document.getElementById('typeChart').getContext('2d');
-  typeChart = new Chart(typeCtx, {
-    type: 'bar',
-    data: {
-      labels: labels,
-      datasets: [{
-        data: data,
-        backgroundColor: backgroundColors,
-        borderColor: borderColors,
-        borderWidth: 1
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      layout: {
-        padding: {
-          bottom: 20
-        }
-      },
-      plugins: {
-        legend: {
-          display: false
-        }
-      },
-      scales: {
-        x: {
-          grid: {
-            display: false
-          },
-          ticks: {
-            color: textColor,
-            padding: 5,
-            maxRotation: 45,
-            minRotation: 0,
-            autoSkip: false
-          }
-        },
-        y: {
-          beginAtZero: true,
-          grid: {
-            display: false
-          },
-          ticks: {
-            color: textColor,
-            stepSize: 1
-          }
-        }
-      }
-    }
-  });
-}
-
-// 更新主题颜色时重新创建图表
-function updateChartsTheme() {
-  if (tripsChart || distanceChart || costChart || durationChart || bureauChart || typeChart) {
-    // 延迟执行以确保CSS变量已更新
-    setTimeout(() => {
-      createYearlyCharts();
-      createBureauChart();
-      createTypeChart();
-    }, 100);
-  }
-}
-
-// 更新所有总结面板
-function updateSummaryPanels() {
-  updateAllTimeSummary();
-  updateYearSelect();
-  const selectedYear = yearSelect.value;
-  if (selectedYear) {
-    updateYearlySummary(selectedYear);
-  }
-
-  // 更新图表
-  createYearlyCharts();
-  createBureauChart();
-  createTypeChart();
-}
+// ===================== 图表渲染 =====================
+// createYearlyCharts, createBureauChart, createTypeChart,
+// updateChartsTheme, updateSummaryPanels 已迁移到 js/modules/charts.js
 
 // Save geocode results to localStorage
 function saveGeocodeCache() {
@@ -1815,12 +1545,12 @@ function attachRowEvents(tr) {
       tr._overlays.forEach(o => {
         try {
           if (currentMapType === 'amap') {
-            if (o.setOptions) o.setOptions({ strokeWeight: 5, zIndex: 100 });
+            if (o.setOptions) o.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 });
           } else if (currentMapType === 'google') {
-            if (o.setOptions) o.setOptions({ strokeWeight: 5, zIndex: 100 });
+            if (o.setOptions) o.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 });
           } else if (currentMapType === 'leaflet') {
             if (o instanceof L.Polyline) {
-              o.setStyle({ weight: 5 });
+              o.setStyle({ weight: window.mapLineWidth + 3 });
               o.bringToFront();
             }
           }
@@ -1834,12 +1564,12 @@ function attachRowEvents(tr) {
       tr._overlays.forEach(o => {
         try {
           if (currentMapType === 'amap') {
-            if (o.setOptions) o.setOptions({ strokeWeight: 2, zIndex: 50 });
+            if (o.setOptions) o.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 });
           } else if (currentMapType === 'google') {
-            if (o.setOptions) o.setOptions({ strokeWeight: 2, zIndex: 50 });
+            if (o.setOptions) o.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 });
           } else if (currentMapType === 'leaflet') {
             if (o instanceof L.Polyline) {
-              o.setStyle({ weight: 2 });
+              o.setStyle({ weight: window.mapLineWidth });
             }
           }
         } catch { }
@@ -1952,749 +1682,15 @@ function attachRowEvents(tr) {
   bindActions();
 }
 
-// 将当前行切换为可编辑状态
-function enterInlineEdit(tr) {
-  const c = tr.cells;
-  const original = {
-    date: c[COL.date].innerText,
-    time: c[COL.time].innerText,
-    duration: c[COL.duration].innerText,
-    trainNo: c[COL.trainNo].innerText,
-    startStation: c[COL.startStation].innerText,
-    startCity: c[COL.startCity].innerText,
-    endStation: c[COL.endStation].innerText,
-    endCity: c[COL.endCity].innerText,
-    seatClass: c[COL.seatClass].innerText,
-    trainType: c[COL.trainType].innerText,
-    bureau: c[COL.bureau].innerText,
-    cost: c[COL.cost].innerText,
-    distance: c[COL.distance].innerText,
-    pricePerKm: c[COL.rmbPerKm].innerText,
-    speed: c[COL.speed].innerText,
-    notes: c[COL.notes].innerText
-  };
-  tr._editOriginal = original;
+// ===================== 表格行内编辑 =====================
+// enterInlineEdit, collectRowData, renderRowFromData, saveInlineEdit, cancelInlineEdit, insertInlineAfter 已迁移到 js/modules/table_editor.js
 
-  // 构造输入
-  const cfg = getEntityConfig();
-  c[COL.date].innerHTML = `<input class=\"inline-input\" type=\"date\" placeholder=\"日期\" title=\"日期\" value=\"${original.date || ''}\">`;
-  c[COL.time].innerHTML = `<input class=\"inline-input\" type=\"time\" placeholder=\"时间\" title=\"时间\" value=\"${original.time || ''}\">`;
-  c[COL.duration].innerHTML = buildDurationSelects(original.duration || '');
-  c[COL.trainNo].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainNo}\" title=\"${cfg.labels.trainNo}\" value=\"${original.trainNo || ''}\">`;
-  c[COL.startStation].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startStation}\" title=\"${cfg.labels.startStation}\" value=\"${original.startStation || ''}\">`;
-  c[COL.startCity].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startCity}\" title=\"${cfg.labels.startCity}\" value=\"${original.startCity || ''}\">`;
-  c[COL.endStation].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endStation}\" title=\"${cfg.labels.endStation}\" value=\"${original.endStation || ''}\">`;
-  c[COL.endCity].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endCity}\" title=\"${cfg.labels.endCity}\" value=\"${original.endCity || ''}\">`;
-  c[COL.seatClass].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.seatClass}\" title=\"${cfg.labels.seatClass}\" value=\"${original.seatClass || ''}\">`;
-  c[COL.trainType].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainType}\" title=\"${cfg.labels.trainType}\" value=\"${original.trainType || ''}\">`;
-  c[COL.bureau].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.bureau}\" title=\"${cfg.labels.bureau}\" value=\"${original.bureau || ''}\">`;
-  c[COL.cost].innerHTML = `<input class=\"inline-input\" type=\"number\" step=\"0.01\" placeholder=\"费用 (RMB)\" title=\"费用 (RMB)\" value=\"${original.cost || ''}\">`;
-  c[COL.distance].innerHTML = `<input class=\"inline-input\" type=\"number\" step=\"1\" placeholder=\"里程 (km)\" title=\"里程 (km)\" value=\"${original.distance || ''}\">`;
-  c[COL.rmbPerKm].textContent = original.pricePerKm || '';
-  c[COL.notes].innerHTML = `<input class=\"inline-input\" type=\"text\" placeholder=\"备注\" title=\"备注\" value=\"${original.notes || ''}\">`;
-
-  // 操作按钮替换为 保存/取消
-  c[COL.actions].innerHTML = `
-        <button class="save">保存</button>
-        <button class="cancel">取消</button>
-      `;
-
-  // 单价和速度联动
-  const updateRowCalculations = () => {
-    const cost = parseFloat(c[COL.cost].querySelector('input').value) || 0;
-    const dist = parseFloat(c[COL.distance].querySelector('input').value) || 0;
-    c[COL.rmbPerKm].textContent = dist > 0 ? (cost / dist).toFixed(4) : '';
-
-    // Speed
-    const durationMins = readDurationFromRowCell(c[COL.duration]);
-    const mins = parseDurationToMinutes(durationMins);
-    if (dist > 0 && mins > 0) {
-      c[COL.speed].textContent = (dist / (mins / 60)).toFixed(1);
-    } else {
-      c[COL.speed].textContent = '';
-    }
-  };
-  c[COL.cost].querySelector('input').addEventListener('input', updateRowCalculations);
-  c[COL.distance].querySelector('input').addEventListener('input', updateRowCalculations);
-  // Also listen to duration changes
-  const durationCell = c[COL.duration];
-  durationCell.querySelectorAll('select').forEach(sel => sel.addEventListener('change', updateRowCalculations));
-
-  // Trigger initial calculation
-  updateRowCalculations();
-
-  // 保存/取消
-  c[COL.actions].querySelector('.save').addEventListener('click', () => saveInlineEdit(tr));
-  c[COL.actions].querySelector('.cancel').addEventListener('click', () => cancelInlineEdit(tr));
-}
-
-function collectRowData(tr) {
-  const c = tr.cells;
-  const getVal = (idx) => {
-    const el = c[idx].querySelector('input');
-    return el ? el.value.trim() : c[idx].innerText.trim();
-  };
-  const getDurationVal = (idx) => readDurationFromRowCell(c[idx]);
-  const cost = parseFloat(getVal(COL.cost)) || 0;
-  const distance = parseFloat(getVal(COL.distance)) || 0;
-  return {
-    date: getVal(COL.date),
-    time: getVal(COL.time),
-    duration: getDurationVal(COL.duration),
-    trainNo: getVal(COL.trainNo),
-    startStation: getVal(COL.startStation),
-    startCity: getVal(COL.startCity),
-    endStation: getVal(COL.endStation),
-    endCity: getVal(COL.endCity),
-    seatClass: getVal(COL.seatClass),
-    trainType: getVal(COL.trainType),
-    bureau: getVal(COL.bureau),
-    cost,
-    distance,
-    notes: getVal(COL.notes)
-  };
-}
-
-function renderRowFromData(tr, recordData) {
-  const rpk = recordData.distance > 0 ? (recordData.cost / recordData.distance).toFixed(4) : '';
-  tr.cells[COL.date].textContent = recordData.date || '';
-  tr.cells[COL.time].textContent = recordData.time || '';
-  tr.cells[COL.duration].textContent = recordData.duration || '';
-  tr.cells[COL.trainNo].textContent = recordData.trainNo || '';
-  tr.cells[COL.startStation].textContent = recordData.startStation || '';
-  tr.cells[COL.startCity].textContent = recordData.startCity || '';
-  tr.cells[COL.endStation].textContent = recordData.endStation || '';
-  tr.cells[COL.endCity].textContent = recordData.endCity || '';
-  tr.cells[COL.seatClass].textContent = recordData.seatClass || '';
-  tr.cells[COL.trainType].textContent = recordData.trainType || '';
-  tr.cells[COL.bureau].textContent = recordData.bureau || '';
-  tr.cells[COL.cost].textContent = recordData.cost.toFixed(2);
-  tr.cells[COL.distance].textContent = recordData.distance || 0;
-  tr.cells[COL.rmbPerKm].textContent = rpk;
-
-  // Speed Calculation
-  const durationMins = parseDurationToMinutes(recordData.duration);
-  let speed = '';
-  if ((recordData.distance || 0) > 0 && durationMins > 0) {
-    speed = ((recordData.distance || 0) / (durationMins / 60)).toFixed(1);
-  }
-  tr.cells[COL.speed].textContent = speed;
-
-  tr.cells[COL.notes].textContent = recordData.notes || '';
-  tr.cells[COL.actions].innerHTML = `
-        <div class="action-menu">
-          <button class="action-menu-btn">⋮</button>
-          <div class="action-menu-dropdown">
-            <button class="modify">✏️ 修改</button>
-            <button class="insert">➕ 插入</button>
-
-            <button class="redraw">🔄 重新画线</button>
-            <button class="delete">🗑️ 删除</button>
-          </div>
-        </div>
-      `;
-  attachRowEvents(tr);
-
-  // Add dropdown toggle functionality
-  const menuBtn = tr.querySelector('.action-menu-btn');
-  const menu = tr.querySelector('.action-menu');
-  if (menuBtn && menu) {
-    menuBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      document.querySelectorAll('.action-menu.open').forEach(m => {
-        if (m !== menu) m.classList.remove('open');
-      });
-      menu.classList.toggle('open');
-    });
-  }
-}
-
-function saveInlineEdit(tr) {
-  const rec = collectRowData(tr);
-  if (!rec.startStation || !rec.endStation) {
-    const cfg = getEntityConfig();
-    alert(`${cfg.labels.startStation} 和 ${cfg.labels.endStation} 不能为空！`);
-    return;
-  }
-  const original = tr._editOriginal || {};
-  const routeChanged = (
-    original.startStation !== rec.startStation ||
-    original.startCity !== rec.startCity ||
-    original.endStation !== rec.endStation ||
-    original.endCity !== rec.endCity
-  );
-  // 找到对应记录索引
-  const rowIndex = Array.from(tbody.children).indexOf(tr);
-  if (rowIndex === -1) return;
-  const record = records[rowIndex] || {};
-  // 更新基础字段
-  record.date = rec.date;
-  record.time = rec.time;
-  record.duration = rec.duration;
-  record.trainNo = rec.trainNo;
-  record.startStation = rec.startStation;
-  record.startCity = rec.startCity;
-  record.endStation = rec.endStation;
-  record.endCity = rec.endCity;
-  record.seatClass = rec.seatClass;
-  record.trainType = rec.trainType;
-  record.bureau = rec.bureau;
-  record.cost = rec.cost;
-  record.distance = rec.distance;
-  record.notes = rec.notes;
-  if (routeChanged) {
-    // 清除旧路径相关字段，待会重新生成
-    delete record.pathWGS;
-    delete record.pathGCJ;
-    delete record.pathIndex;
-    delete record.startLon; delete record.startLat;
-    delete record.endLon; delete record.endLat;
-    // 移除旧覆盖物
-    if (tr._overlays) {
-      tr._overlays.forEach(o => {
-        try {
-          if (currentMapType === 'amap') {
-            if (o.setMap) o.setMap(null);
-            if (amapInstance && amapInstance.remove) amapInstance.remove(o);
-          } else if (currentMapType === 'google') {
-            if (o.setMap) o.setMap(null);
-          } else if (currentMapType === 'leaflet') {
-            if (o.remove) o.remove();
-          }
-        } catch { }
-      });
-      tr._overlays = [];
-    }
-  }
-  // 回写到行展示
-  renderRowFromData(tr, record);
-  // 保存 & 局部重绘
-  if (routeChanged) {
-    // 仅重绘该行
-    drawPath(tr, record); // 内部会在生成后 saveRecords()
-  } else {
-    // 线路未变，若之前仍有覆盖物则无需动作；若被用户修改其它字段，保持路径
-    saveRecords();
-  }
-  // 更新统计与图例（不触发全量重绘）
-  try { updateYearLegend && updateYearLegend(); } catch { }
-  try { updateStats && updateStats(); } catch { }
-}
-
-function cancelInlineEdit(tr) {
-  if (tr._isNewRow) {
-    tr.remove();
-    updateSequenceNumbers();
-    return;
-  }
-  const o = tr._editOriginal;
-  if (o) {
-    renderRowFromData(tr, {
-      date: o.date, time: o.time, duration: o.duration, trainNo: o.trainNo,
-      startStation: o.startStation, startCity: o.startCity, endStation: o.endStation, endCity: o.endCity,
-      seatClass: o.seatClass, trainType: o.trainType, bureau: o.bureau,
-      cost: parseFloat(o.cost) || 0, distance: parseFloat(o.distance) || 0, notes: o.notes
-    });
-  }
-}
-
-function insertInlineAfter(tr) {
-  const newTr = document.createElement('tr');
-  const cfg = getEntityConfig();
-  newTr.innerHTML = `
-        <td></td>
-        <td><input class=\"inline-input\" type=\"date\" placeholder=\"日期\" title=\"日期\"></td>
-        <td><input class=\"inline-input\" type=\"time\" placeholder=\"时间\" title=\"时间\"></td>
-  <td>${buildDurationSelects('00:00')}</td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainNo}\" title=\"${cfg.labels.trainNo}\"></td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startStation}\" title=\"${cfg.labels.startStation}\"></td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startCity}\" title=\"${cfg.labels.startCity}\"></td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endStation}\" title=\"${cfg.labels.endStation}\"></td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endCity}\" title=\"${cfg.labels.endCity}\"></td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.seatClass}\" title=\"${cfg.labels.seatClass}\"></td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainType}\" title=\"${cfg.labels.trainType}\"></td>
-        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.bureau}\" title=\"${cfg.labels.bureau}\"></td>
-        <td><input class=\"inline-input\" type=\"number\" step=\"0.01\" placeholder=\"费用 (RMB)\" title=\"费用 (RMB)\" value=\"0\"></td>
-        <td><input class="inline-input" type="number" step="1" placeholder="里程 (km)" title="里程 (km)" value="0"></td>
-        <td></td><!-- RMB/km -->
-        <td></td><!-- Speed -->
-        <td><input class="inline-input" type="text" placeholder="备注" title="备注"></td>
-        <td>
-          <button class="save">保存</button>
-          <button class="cancel">取消</button>
-        </td>
-      `;
-  // 插入到当前行后
-  if (tr.nextSibling) tbody.insertBefore(newTr, tr.nextSibling); else tbody.appendChild(newTr);
-  newTr._isNewRow = true;
-  updateSequenceNumbers();
-
-  // 单价和速度联动
-  const c = newTr.cells;
-  const updateRowCalculations = () => {
-    const cost = parseFloat(c[COL.cost].querySelector('input').value) || 0;
-    const dist = parseFloat(c[COL.distance].querySelector('input').value) || 0;
-    // RPK
-    c[COL.rmbPerKm].textContent = dist > 0 ? (cost / dist).toFixed(4) : '';
-
-    // Speed
-    // Duration is in cell 3. It contains SELECTs.
-    const durationMins = readDurationFromRowCell(c[COL.duration]); // Need to ensure this function works with new row structure
-    // readDurationFromRowCell returns "HH:MM". We need to parse it.
-    const mins = parseDurationToMinutes(durationMins);
-    if (dist > 0 && mins > 0) {
-      c[COL.speed].textContent = (dist / (mins / 60)).toFixed(1);
-    } else {
-      c[COL.speed].textContent = '';
-    }
-  };
-  c[COL.cost].querySelector('input').addEventListener('input', updateRowCalculations);
-  c[COL.distance].querySelector('input').addEventListener('input', updateRowCalculations);
-  // Also listen to duration changes
-  const durationCell = c[COL.duration];
-  durationCell.querySelectorAll('select').forEach(sel => sel.addEventListener('change', updateRowCalculations));
-
-  c[COL.actions].querySelector('.save').addEventListener('click', () => {
-    const rec = collectRowData(newTr);
-    if (!rec.startStation || !rec.endStation) {
-      const cfg = getEntityConfig();
-      alert(`${cfg.labels.startStation} 和 ${cfg.labels.endStation} 不能为空！`);
-      return;
-    }
-    // 渲染静态单元格
-    renderRowFromData(newTr, rec);
-    // 更新序号
-    updateSequenceNumbers();
-    // 计算插入位置并写入 records（保持其他记录的路径缓存不丢失）
-    const idx = Array.from(tbody.children).indexOf(newTr);
-    if (idx === -1) return; // 理论不应发生
-    records.splice(idx, 0, { ...rec });
-    saveRecords();
-    // 仅绘制新增这一条线路
-    try { drawPath(newTr, records[idx]); } catch (e) { console.warn('绘制新增线路失败', e); }
-    // 更新图例与统计
-    try { updateYearLegend && updateYearLegend(); } catch { }
-    try { updateStats && updateStats(); } catch { }
-  });
-
-  c[COL.actions].querySelector('.cancel').addEventListener('click', () => {
-    newTr.remove();
-    updateSequenceNumbers();
-  });
-}
 
 // （已移除国际/中文判断函数：仅使用统一的 Nominatim 查询）
 
-// ===================== 仅使用 Nominatim 的正向地理编码 =====================
-// 需求：只调用 https://nominatim.openstreetmap.org/search 获取 WGS84，再按需中国境内转换 GCJ-02 用于高德底图。不得调用谷歌/高德官方地理编码。
-// geocode(station, city) 返回 WGS84 [lon, lat]，转换在使用处（绘制到高德时）进行。
-
-function geocode(station, city) {
-  if (!station) return Promise.reject(new Error('station 为空'));
-  // 调整：只使用用户输入的站名原文（去前后空格），不再自动补“站”字，也不拼接城市
-  const query = station.trim();
-  const cacheKey = `nominatim_${query}`;
-  if (geocodeCache[cacheKey]) {
-    return Promise.resolve(geocodeCache[cacheKey]); // 存的即 WGS84
-  }
-  const url = new URL('https://nominatim.openstreetmap.org/search');
-  url.searchParams.set('q', query);
-  url.searchParams.set('format', 'json');
-  url.searchParams.set('limit', '1');
-  url.searchParams.set('addressdetails', '0');
-  return fetch(url.toString(), { headers: { 'Accept-Language': 'zh-CN,en;q=0.8', 'User-Agent': 'train-records-nominatim-demo' } })
-    .then(r => { if (!r.ok) throw new Error('Nominatim 网络错误 ' + r.status); return r.json(); })
-    .then(data => {
-      if (!Array.isArray(data) || !data.length) throw new Error('未找到: ' + query);
-      const item = data[0];
-      const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
-      if (isNaN(lat) || isNaN(lon)) throw new Error('Nominatim 返回坐标无效');
-      geocodeCache[cacheKey] = [lon, lat];
-      saveGeocodeCache();
-      return geocodeCache[cacheKey];
-    });
-}
-
-function buildGeocodeQuery(city, station) {
-  if (!station) return null;
-  return station.trim(); // 仅原始站名，不自动补“站”
-}
-
-// Coordinate conversion functions (isInChina, wgs84ToGcj02, transformLat, transformLon) moved to utils/helpers.js
-// ================== Nominatim-only 结束 ==================
-
-// 通用延迟工具
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// Draw the path on the map for a given record - 仅使用 Nominatim (WGS84) + 中国境内 WGS→GCJ 转换
-async function drawPath(tr, record) {
-  if (!record.startStation || !record.endStation) return;
-  const routeKey = [record.startStation, record.endStation].sort().join('→');
-  const year = record.date ? record.date.substring(0, 4) : '';
-  let geocodeCount = 0; // 统计本条记录实际调用了多少次 geocode，用于节流控制
-
-  // 如果已有路径数据，直接恢复
-  if (Array.isArray(record.pathWGS) && record.pathWGS.length) {
-    const strokeColor = getYearColor(year);
-    const pathIndex = record.pathIndex || 0;
-    counts[routeKey] = Math.max(counts[routeKey] || 0, pathIndex + 1);
-    let overlays = [];
-    try {
-      if (currentMapType === 'amap') {
-        // 存了 GCJ 优先，否则把 WGS 转 GCJ
-        let gcjPath = record.pathGCJ;
-        if (!Array.isArray(gcjPath) || !gcjPath.length) {
-          // 转换整条路径
-          gcjPath = record.pathWGS.map(p => isInChina(p[0], p[1]) ? wgs84ToGcj02(p[0], p[1]) : p);
-        }
-        const polyline = new AMap.Polyline({ path: gcjPath, isOutline: false, strokeColor, strokeWeight: 2, strokeOpacity: 0.9, strokeStyle: 'solid', zIndex: 50 });
-
-        // Interaction Events (AMap)
-        polyline.on('mouseover', () => {
-          polyline.setOptions({ strokeWeight: 5, zIndex: 100 });
-          tr.classList.add('highlight-row');
-        });
-        polyline.on('mouseout', () => {
-          polyline.setOptions({ strokeWeight: 2, zIndex: 50 });
-          tr.classList.remove('highlight-row');
-        });
-        polyline.on('click', () => {
-          tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          tr.classList.add('highlight-row');
-          setTimeout(() => tr.classList.remove('highlight-row'), 1500);
-        });
-
-        amapInstance.add(polyline); overlays.push(polyline);
-        if (gcjPath.length) {
-          const mid = gcjPath[Math.floor(gcjPath.length / 2)];
-          const label = new AMap.Text({ text: year, position: mid, style: { 'font-size': '12px', 'font-weight': 'bold', 'color': strokeColor, 'background-color': 'rgba(255,255,255,0.8)', 'border': '1px solid ' + strokeColor, 'border-radius': '3px', 'padding': '2px 4px', 'text-align': 'center' }, offset: [0, -10], zIndex: 50 });
-          amapInstance.add(label); overlays.push(label);
-        }
-      } else if (currentMapType === 'google') {
-        const googlePath = record.pathWGS.map(p => ({ lat: p[1], lng: p[0] }));
-        const polyline = new google.maps.Polyline({ path: googlePath, geodesic: false, strokeColor: getYearColor(year), strokeOpacity: 0.9, strokeWeight: 2, zIndex: 50 });
-
-        // Interaction Events (Google Maps)
-        google.maps.event.addListener(polyline, 'mouseover', () => {
-          polyline.setOptions({ strokeWeight: 5, zIndex: 100 });
-          tr.classList.add('highlight-row');
-        });
-        google.maps.event.addListener(polyline, 'mouseout', () => {
-          polyline.setOptions({ strokeWeight: 2, zIndex: 50 });
-          tr.classList.remove('highlight-row');
-        });
-        google.maps.event.addListener(polyline, 'click', () => {
-          tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          tr.classList.add('highlight-row');
-          setTimeout(() => tr.classList.remove('highlight-row'), 1500);
-        });
-
-        polyline.setMap(googleMap); overlays.push(polyline);
-      } else if (currentMapType === 'leaflet') {
-        // 使用 Leaflet 绘制已存路径
-        const latLngs = record.pathWGS.map(p => [p[1], p[0]]); // Leaflet uses [lat, lon]
-        const polyline = L.polyline(latLngs, {
-          color: strokeColor,
-          weight: 2,
-          opacity: 0.9,
-          smoothFactor: 1
-        }).addTo(leafletMap);
-
-        polyline.on('mouseover', () => {
-          polyline.setStyle({ weight: 5 });
-          polyline.bringToFront();
-          tr.classList.add('highlight-row');
-        });
-        polyline.on('mouseout', () => {
-          polyline.setStyle({ weight: 2 });
-          tr.classList.remove('highlight-row');
-        });
-        polyline.on('click', () => {
-          tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          tr.classList.add('highlight-row');
-          setTimeout(() => tr.classList.remove('highlight-row'), 1500);
-        });
-        overlays.push(polyline);
-      }
-      tr._overlays = overlays;
-      const shouldShow = isUserDeselectedAll ? false : (selectedYears.size === 0 || selectedYears.has(year));
-      if (!shouldShow) overlays.forEach(o => { if (o.setOptions) o.setOptions({ strokeOpacity: 0, zIndex: -1 }); else if (o.hide) o.hide(); });
-      return; // 已恢复
-    } catch (e) { console.warn('恢复已存路径失败，尝试重新生成:', e.message); }
-  }
-
-  // 无路径数据则生成
-  try {
-    let startLon = record.startLon, startLat = record.startLat, endLon = record.endLon, endLat = record.endLat;
-    if (!(Number.isFinite(startLon) && Number.isFinite(startLat))) {
-      const sw = await geocode(record.startStation, record.startCity);
-      startLon = sw[0]; startLat = sw[1];
-      record.startLon = startLon; record.startLat = startLat;
-      geocodeCount++;
-    }
-    if (!(Number.isFinite(endLon) && Number.isFinite(endLat))) {
-      const ew = await geocode(record.endStation, record.endCity);
-      endLon = ew[0]; endLat = ew[1];
-      record.endLon = endLon; record.endLat = endLat;
-      geocodeCount++;
-    }
-    // 计算或使用既有 pathIndex
-    let pathIndex = record.pathIndex;
-    if (!Number.isInteger(pathIndex)) {
-      counts[routeKey] = (counts[routeKey] || 0) + 1;
-      pathIndex = counts[routeKey] - 1;
-      record.pathIndex = pathIndex;
-    } else {
-      counts[routeKey] = Math.max(counts[routeKey] || 0, pathIndex + 1);
-    }
-    const strokeColor = getYearColor(year);
-    // 判断是否为反向路线（相对于 routeKey 的排序顺序）
-    // 如果 start > end，说明当前方向与 routeKey (A->B) 相反，标记为 isReverse
-    const isReverse = record.startStation > record.endStation;
-
-    // 生成 WGS 曲线
-    const wgsPath = generateArcPath([startLon, startLat], [endLon, endLat], pathIndex, isReverse);
-    record.pathWGS = wgsPath.map(p => [p[0], p[1]]);
-    let overlays = [];
-    if (currentMapType === 'amap') {
-      const gcjPath = wgsPath.map(p => isInChina(p[0], p[1]) ? wgs84ToGcj02(p[0], p[1]) : p);
-      record.pathGCJ = gcjPath.map(p => [p[0], p[1]]);
-      const polyline = new AMap.Polyline({ path: gcjPath, isOutline: false, strokeColor, strokeWeight: 2, strokeOpacity: 0.9, strokeStyle: 'solid' });
-      amapInstance.add(polyline); overlays.push(polyline);
-      if (gcjPath.length) {
-        const mid = gcjPath[Math.floor(gcjPath.length / 2)];
-        const label = new AMap.Text({ text: year, position: mid, style: { 'font-size': '12px', 'font-weight': 'bold', 'color': strokeColor, 'background-color': 'rgba(255,255,255,0.8)', 'border': '1px solid ' + strokeColor, 'border-radius': '3px', 'padding': '2px 4px', 'text-align': 'center' }, offset: [0, -10] });
-        amapInstance.add(label); overlays.push(label);
-      }
-    } else if (currentMapType === 'google') {
-      const googlePath = wgsPath.map(p => ({ lat: p[1], lng: p[0] }));
-      const polyline = new google.maps.Polyline({ path: googlePath, geodesic: false, strokeColor, strokeOpacity: 0.9, strokeWeight: 2 });
-      polyline.setMap(googleMap); overlays.push(polyline);
-    } else if (currentMapType === 'leaflet') {
-      // Leaflet 绘制新路径
-      const latLngs = wgsPath.map(p => [p[1], p[0]]);
-      const polyline = L.polyline(latLngs, {
-        color: strokeColor,
-        weight: 2,
-        opacity: 0.9,
-        smoothFactor: 1
-      }).addTo(leafletMap);
-
-      // Bind Interactions
-      polyline.on('mouseover', () => { polyline.setStyle({ weight: 5 }); polyline.bringToFront(); tr.classList.add('highlight-row'); });
-      polyline.on('mouseout', () => { polyline.setStyle({ weight: 2 }); tr.classList.remove('highlight-row'); });
-      polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 1500); });
-
-      overlays.push(polyline);
-    }
-    tr._overlays = overlays;
-    const shouldShow = isUserDeselectedAll ? false : (selectedYears.size === 0 || selectedYears.has(year));
-    if (!shouldShow) overlays.forEach(o => { if (o.setOptions) o.setOptions({ strokeOpacity: 0, zIndex: -1 }); else if (o.hide) o.hide(); });
-    saveRecords(); // 不区分 created，统一保存（可能只是恢复了 pathIndex）
-    // 节流：只有发生地理编码（至少一次 geocode 调用）才等待；等待时间 500ms
-    if (geocodeCount > 0) await sleep(500);
-  } catch (e) {
-    console.error('生成线路失败:', e.message);
-    try {
-      record._pathError = e.message || '未知错误';
-      addPathErrorUI(record, e.message);
-    } catch (_) { }
-  }
-}
-
-// 生成贝塞尔弧线路径（通用函数）
-function generateArcPath(startCoords, endCoords, pathIndex = 0, isReverse = false) {
-  const [x1, y1] = startCoords;
-  const [x2, y2] = endCoords;
-  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
-  let ux = -dy / len, uy = dx / len;
-
-  // 减小基础弧度系数
-  const base = 0.15 * len;
-  const factor = base * (1 + pathIndex * 0.15);
-
-  // 伪随机决定初始方向：基于坐标和的哈希
-  // 这样同一条线路（起终点相同）的方向是固定的，但不同线路的方向是随机的
-  const seed = Math.floor((x1 + y1 + x2 + y2) * 10000);
-  const randomSide = seed % 2;
-
-  // 结合 pathIndex、随机因子和反向标志决定方向
-  // isReverse 用于确保 A->B 和 B->A 在 pathIndex 递增时能正确分列两侧，而不是重叠
-  if ((pathIndex + randomSide + (isReverse ? 1 : 0)) % 2) { ux = -ux; uy = -uy; }
-
-  // 生成控制点
-  const controlPoints = [];
-  for (let i = 0; i < 5; i++) {
-    const t = (i + 1) / 6;
-    const cx = x1 + dx * t + ux * factor * Math.sin(Math.PI * t) * 0.8;
-    const cy = y1 + dy * t + uy * factor * Math.sin(Math.PI * t) * 0.8;
-    controlPoints.push([cx, cy]);
-  }
-
-  const seg = 120;
-  const path = [];
-
-  // 六阶贝塞尔曲线
-  for (let i = 0; i <= seg; i++) {
-    const t = i / seg;
-    let point = [0, 0];
-    let binomialCoef = 1;
-
-    // 起点
-    point[0] += Math.pow(1 - t, 6) * x1;
-    point[1] += Math.pow(1 - t, 6) * y1;
-
-    // 控制点
-    for (let j = 0; j < 5; j++) {
-      binomialCoef = binomialCoef * (6 - j) / (j + 1);
-      const factor = binomialCoef * Math.pow(t, j + 1) * Math.pow(1 - t, 5 - j);
-      point[0] += factor * controlPoints[j][0];
-      point[1] += factor * controlPoints[j][1];
-    }
-
-    // 终点
-    point[0] += Math.pow(t, 6) * x2;
-    point[1] += Math.pow(t, 6) * y2;
-
-    path.push(point);
-  }
-
-  return path.filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
-}
-
-// Add a record to the table and draw it on the map
-function addRecordToTable(recordData, insertAfterTr = null) {
-  const tr = document.createElement('tr');
-  const rpk = recordData.distance > 0 ? (recordData.cost / recordData.distance).toFixed(4) : '';
-  tr.innerHTML = `
-        <td></td> <!-- Seq # updated later -->
-        <td>${recordData.date}</td>
-        <td>${recordData.time}</td>
-        <td>${recordData.duration}</td>
-        <td>${recordData.trainNo}</td>
-        <td>${recordData.startStation}</td>
-        <td>${recordData.startCity}</td>
-        <td>${recordData.endStation}</td>
-        <td>${recordData.endCity}</td>
-        <td>${recordData.seatClass}</td>
-        <td>${recordData.trainType}</td>
-        <td>${recordData.bureau}</td>
-        <td>${recordData.cost.toFixed(2)}</div>
-        <td>${recordData.distance}</td>
-        <td>${rpk}</td>
-        <td>${(() => {
-      const durationMins = parseDurationToMinutes(recordData.duration);
-      if (recordData.distance > 0 && durationMins > 0) {
-        return (recordData.distance / (durationMins / 60)).toFixed(1);
-      }
-      return '';
-    })()}</td>
-        <td>${recordData.notes}</td>
-        <td>
-          <div class="action-menu">
-            <button class="action-menu-btn">⋮</button>
-            <div class="action-menu-dropdown">
-              <button class="modify">✏️ 修改</button>
-              <button class="insert">➕ 插入</button>
-
-              <button class="redraw">🔄 重新画线</button>
-              <button class="delete">🗑️ 删除</button>
-            </div>
-          </div>
-        </td>
-      `;
-
-  // 修复插入逻辑
-  if (insertAfterTr && insertAfterTr.parentNode) {
-    // 插入到指定行的后面
-    if (insertAfterTr.nextSibling) {
-      tbody.insertBefore(tr, insertAfterTr.nextSibling);
-    } else {
-      tbody.appendChild(tr);
-    }
-  } else {
-    // 默认添加到末尾
-    tbody.appendChild(tr);
-  }
-
-  attachRowEvents(tr);
-
-  // Add dropdown toggle functionality
-  const menuBtn = tr.querySelector('.action-menu-btn');
-  const menu = tr.querySelector('.action-menu');
-  if (menuBtn && menu) {
-    menuBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Close all other menus
-      document.querySelectorAll('.action-menu.open').forEach(m => {
-        if (m !== menu) m.classList.remove('open');
-      });
-      menu.classList.toggle('open');
-    });
-  }
-
-  // 实时绘制路径，无论地图是否完全加载
-  tr._record = recordData;
-  drawPath(tr, recordData);
-
-  // 更新图例
-  updateYearLegend();
-
-  return tr;
-}
-
-// 地点标记切换已移除
-
-// 新增：重新绘制所有路径
-// 全量重新绘制：删除所有覆盖物 + 清除每条记录的路径缓存字段 + 重新生成
-async function redrawAllPaths(force = false) {
-  if (force) {
-    // 1. 清除地图上现有覆盖物
-    Array.from(tbody.children).forEach(tr => {
-      if (tr._overlays) {
-        tr._overlays.forEach(o => {
-          try {
-            if (currentMapType === 'amap') {
-              if (o.setMap) o.setMap(null);
-              if (amapInstance && amapInstance.remove) { try { amapInstance.remove(o); } catch (e) { } }
-            } else if (currentMapType === 'google') {
-              if (o.setMap) o.setMap(null);
-            } else if (currentMapType === 'leaflet') {
-              if (o.remove) o.remove();
-            }
-          } catch { }
-        });
-      }
-      tr._overlays = [];
-    });
-    // 2. 清除偏移计数器
-    Object.keys(counts).forEach(key => delete counts[key]);
-    // 3. 清除每条记录的路径/坐标缓存，使其强制重新 geocode + 生成
-    records.forEach(r => {
-      delete r.pathWGS; delete r.pathGCJ; delete r.pathIndex;
-      delete r.startLon; delete r.startLat; delete r.endLon; delete r.endLat;
-    });
-    saveRecords();
-  }
-  // 4. 逐条重新绘制（会自动节流 geocode）
-  const allRows = Array.from(tbody.children);
-  for (let i = 0; i < allRows.length; i++) {
-    const tr = allRows[i];
-    const rec = records[i];
-    if (rec && rec.startStation && rec.endStation) {
-      try { await drawPath(tr, rec); } catch (error) {
-        const route = `${rec.startCity || ''}${rec.startStation} → ${rec.endCity || ''}${rec.endStation}`;
-        console.error(`重绘路径失败 [${route}]:`, error.message);
-      }
-    }
-  }
-  updateYearLegend();
-}
-
-function forceRedrawAllPaths() {
-  if (!confirm('确定要重新生成所有线路？\n这将清除已缓存的路径与坐标并重新请求。')) return;
-  redrawAllPaths(true);
-}
+// ===================== 地理编码与路径绘制 =====================
+// geocode, buildGeocodeQuery, sleep, drawPath, generateArcPath, redrawAllPaths, forceRedrawAllPaths
+// 已迁移到 js/modules/geocoding.js
 
 // （路径单独缓存逻辑已移除，路径数据直接伴随记录保存）
 
@@ -2781,8 +1777,9 @@ function reloadForEntity(entity) {
   isUserDeselectedAll = false;
   // 重新加载记录
   records = JSON.parse(localStorage.getItem(getStorageKey())) || [];
-  // 清空表格并渲染
-  tbody.innerHTML = '';
+  // 根据当前数据类型 (train/plane) 加载对应的自定义地址字典
+  loadCustomAddresses();
+
   // 渲染表格行（不立即绘制路径，避免地图状态未就绪）
   records.forEach(rec => {
     const tr = document.createElement('tr');
@@ -3041,6 +2038,12 @@ const replayWidthValue = document.getElementById('replayWidthValue');
 let replayCumulativeDistance = 0;
 let replayCumulativeTime = 0;
 
+// Custom Route Viewer globals
+let customRouteMapInstance = null;
+let customRoutePolylines = [];
+let customRouteAnimationId = null;
+let customRoutePaused = false;
+
 
 
 // 监听数据源切换
@@ -3132,10 +2135,9 @@ if (replayBtn) {
     if (legend) {
       legend.style.display = currentEntity === 'all' ? 'block' : 'none';
     }
-    // 绑定键盘快捷键
+    // 绑定键盘快捷键 (Space for Pause/Resume)
     const keyHandler = (e) => {
       if (replayOverlay.style.display !== 'flex') return;
-      if (e.key === 'Escape') { replayCloseBtn.click(); }
       if (e.code === 'Space') { e.preventDefault(); replayPauseBtn && replayPauseBtn.click(); }
     };
     window._replayKeyHandler = keyHandler;
@@ -3358,12 +2360,6 @@ if (featuresHelpBtn && featuresHelpOverlay && featuresHelpClose) {
       featuresHelpOverlay.style.display = 'none';
     }
   });
-  // Close on ESC key
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && featuresHelpOverlay.style.display === 'flex') {
-      featuresHelpOverlay.style.display = 'none';
-    }
-  });
 }
 
 // Main form submission logic（行内模式下可能无此按钮）
@@ -3494,597 +2490,13 @@ function createInlineNewRow() {
   }
 }
 
-// 新增：CSV导入功能
-function importCsv(file) {
-  if (!file) return;
+// ===================== 数据导入导出功能 =====================
+// importCsv, parseCsvLine, parseCsvToRecords, exportToCsv,
+// importExcel, exportToJson 已迁移到 js/modules/data_io.js
 
-  const reader = new FileReader();
 
-  reader.onload = function (e) {
-    try {
-      const csvText = e.target.result;
-      const lines = csvText.split('\n');
 
-      if (lines.length <= 1) {
-        throw new Error('CSV文件无数据或格式错误');
-      }
-
-      // 解析CSV头部
-      const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-      console.log('CSV表头:', headers);
-
-      // 解析CSV数据
-      const csvData = [];
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-
-        const values = parseCsvLine(line);
-        if (values.length === headers.length) {
-          const rowData = {};
-          headers.forEach((header, index) => {
-            rowData[header] = values[index];
-          });
-          csvData.push(rowData);
-        }
-      }
-
-      console.log('CSV数据预览:', csvData);
-
-      // 解析CSV数据为应用格式
-      const newRecords = parseCsvToRecords(csvData);
-
-      if (newRecords.length === 0) {
-        throw new Error('无法解析CSV数据，请检查文件格式');
-      }
-
-      // 询问用户如何处理数据
-      const replace = confirm(
-        `成功解析 ${newRecords.length} 条记录\n\n` +
-        `点击"确定"替换所有现有数据\n` +
-        `点击"取消"添加到现有数据`
-      );
-
-      if (replace) {
-        records = newRecords;
-      } else {
-        records = [...records, ...newRecords];
-      }
-
-      saveRecords();
-      alert(`${replace ? '替换' : '添加'}了 ${newRecords.length} 条记录，页面将重新加载`);
-      location.reload();
-
-    } catch (error) {
-      console.error('CSV导入失败:', error);
-      alert('CSV导入失败: ' + error.message);
-    }
-  };
-
-  reader.onerror = function () {
-    alert('读取CSV文件失败');
-  };
-
-  reader.readAsText(file, 'UTF-8');
-}
-
-// 解析CSV行，处理引号包围的字段
-function parseCsvLine(line) {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      result.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-
-  result.push(current.trim());
-  return result;
-}
-
-// 解析CSV数据为记录格式
-function parseCsvToRecords(csvData) {
-  const newRecords = [];
-
-  // 字段映射
-  const cfg = getEntityConfig();
-  const fieldMap = {
-    seq: '序号',
-    date: '时间',
-    time: '时刻',
-    duration: '时长',
-    trainNo: cfg.labels.trainNo,
-    startStation: cfg.labels.startStation,
-    startCity: cfg.labels.startCity,
-    endStation: cfg.labels.endStation,
-    endCity: cfg.labels.endCity,
-    seatClass: cfg.labels.seatClass,
-    trainType: cfg.labels.trainType,
-    bureau: cfg.labels.bureau,
-    cost: '费用(RMB)',
-    distance: '里程(km)',
-    pricePerKm: 'RMB/km',
-    notes: '备注'
-  };
-
-  for (const row of csvData) {
-    try {
-      // 处理日期格式
-      let date = '';
-      if (row[fieldMap.date]) {
-        const dateStr = String(row[fieldMap.date]);
-        const match = dateStr.match(/(\d{4})[\.\-\/]?(\d{1,2})[\.\-\/]?(\d{1,2})/);
-        if (match) {
-          const [, y, m, d] = match;
-          date = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-        }
-      }
-
-      // 处理时间格式
-      let time = '';
-      if (row[fieldMap.time]) {
-        const timeStr = String(row[fieldMap.time]).trim();
-        const match = timeStr.match(/(\d{1,2})[\：\:\.]\s*(\d{1,2})/);
-        if (match) {
-          const [, h, m] = match;
-          time = `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
-        }
-      }
-
-      // 处理时长格式
-      let duration = '';
-      if (row[fieldMap.duration]) {
-        const durationStr = String(row[fieldMap.duration]);
-        const match = durationStr.match(/(\d{1,2})[\：\:](\d{1,2})/);
-        if (match) {
-          const [, h, m] = match;
-          duration = `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
-        }
-      }
-
-      const record = {
-        date: date,
-        time: time,
-        duration: duration,
-        trainNo: String(row[fieldMap.trainNo] || ''),
-        startStation: String(row[fieldMap.startStation] || ''),
-        startCity: String(row[fieldMap.startCity] || ''),
-        endStation: String(row[fieldMap.endStation] || ''),
-        endCity: String(row[fieldMap.endCity] || ''),
-        seatClass: String(row[fieldMap.seatClass] || ''),
-        trainType: String(row[fieldMap.trainType] || ''),
-        bureau: String(row[fieldMap.bureau] || ''),
-        cost: parseFloat(row[fieldMap.cost]) || 0,
-        distance: parseFloat(row[fieldMap.distance]) || 0,
-        notes: String(row[fieldMap.notes] || '')
-      };
-
-      // 验证必要字段
-      if (!record.startStation || !record.endStation) {
-        console.warn('跳过无效行，缺少起点或终点:', row);
-        continue;
-      }
-
-      newRecords.push(record);
-
-    } catch (error) {
-      console.warn('解析CSV行数据失败:', row, error);
-    }
-  }
-
-  return newRecords;
-}
-
-// CSV导入事件监听
-document.getElementById('importCsvBtn').addEventListener('click', () => {
-  document.getElementById('importCsvFile').click();
-});
-
-document.getElementById('importCsvFile').addEventListener('change', e => {
-  if (e.target.files.length > 0) {
-    importCsv(e.target.files[0]);
-    e.target.value = ''; // 重置文件选择器
-  }
-});
-
-// 新增：CSV导出功能
-function exportToCsv() {
-  try {
-    if (records.length === 0) {
-      alert('没有数据可以导出！');
-      return;
-    }
-
-    // CSV表头
-    const cfg = getEntityConfig();
-    const headers = [
-      '序号', '时间', '时刻', '时长', cfg.labels.trainNo, cfg.labels.startStation, cfg.labels.startCity,
-      cfg.labels.endStation, cfg.labels.endCity, cfg.labels.seatClass, cfg.labels.trainType, cfg.labels.bureau,
-      '费用(RMB)', '里程(km)', 'RMB/km', 'km/h', '备注'
-    ];
-
-    // 构建CSV内容
-    const csvContent = [];
-
-    // 添加表头
-    csvContent.push(headers.join(','));
-
-    // 添加数据行
-    records.forEach((record, index) => {
-      const pricePerKm = record.distance > 0 ? (record.cost / record.distance).toFixed(4) : '';
-
-      // Calculate Speed
-      let speed = '';
-      const durationMins = parseDurationToMinutes(record.duration);
-      if (record.distance > 0 && durationMins > 0) {
-        speed = (record.distance / (durationMins / 60)).toFixed(1);
-      }
-
-      const row = [
-        index + 1, // 序号
-        record.date || '',
-        record.time || '',
-        record.duration || '',
-        record.trainNo || '',
-        record.startStation || '',
-        record.startCity || '',
-        record.endStation || '',
-        record.endCity || '',
-        record.seatClass || '',
-        record.trainType || '',
-        record.bureau || '',
-        (record.cost || 0).toFixed(2),
-        record.distance || 0,
-        pricePerKm,
-        speed,
-        record.notes || ''
-      ];
-
-      // 处理包含逗号的字段，用引号包围
-      const escapedRow = row.map(field => {
-        const fieldStr = String(field);
-        if (fieldStr.includes(',') || fieldStr.includes('"') || fieldStr.includes('\n')) {
-          return '"' + fieldStr.replace(/"/g, '""') + '"';
-        }
-        return fieldStr;
-      });
-
-      csvContent.push(escapedRow.join(','));
-    });
-
-    // 创建Blob对象
-    const csvString = csvContent.join('\n');
-    const blob = new Blob(['\uFEFF' + csvString], { type: 'text/csv;charset=utf-8;' });
-
-    // 创建下载链接
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-
-    // 生成文件名（包含当前日期）
-    const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10);
-    link.setAttribute('download', `${cfg.exportPrefix}_${dateStr}.csv`);
-
-    // 触发下载
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    alert(`成功导出 ${records.length} 条记录到CSV文件！`);
-
-  } catch (error) {
-    console.error('CSV导出失败:', error);
-    alert('CSV导出失败: ' + error.message);
-  }
-}
-
-// Excel导入功能
-function importExcel(file) {
-  const reader = new FileReader();
-
-  reader.onload = function (e) {
-    try {
-      const data = new Uint8Array(e.target.result);
-      const workbook = XLSX.read(data, { type: 'array' });
-      const firstSheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[firstSheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-      if (jsonData.length < 2) {
-        alert('Excel文件格式不正确或没有数据');
-        return;
-      }
-
-      const headers = jsonData[0];
-      const rows = jsonData.slice(1);
-
-      // 字段映射（支持中英文表头，兼容火车/飞机）
-      const fieldMap = {
-        date: ['日期', 'Date'],
-        time: ['时间', 'Time', '发车时间', '起飞时间', 'Departure Time'],
-        duration: ['时长', 'Duration', '历时', '飞行时长'],
-        trainNo: ['车次', 'Train No', '列车车次', '航班号', 'Flight No'],
-        startStation: ['起点站', 'Start Station', '出发站', '出发机场', 'Departure Airport'],
-        startCity: ['起点城市', 'Start City', '出发城市'],
-        endStation: ['终点站', 'End Station', '到达站', '到达机场', 'Arrival Airport'],
-        endCity: ['终点城市', 'End City', '到达城市'],
-        seatClass: ['坐席', 'Seat Class', '席别', '舱位', 'Cabin'],
-        trainType: ['车型号', 'Train Type', '列车等级', '航空公司', 'Airline'],
-        bureau: ['铁路局', 'Bureau', '担当局', '承运人代码', 'Carrier Code', '机型', 'Aircraft', 'Aircraft Type', 'Plane Model'],
-        cost: ['费用', 'Cost', '票价', '费用(RMB)'],
-        distance: ['里程', 'Distance', '里程(km)'],
-        notes: ['备注', 'Notes']
-      };
-
-      // 找到列对应关系
-      const columnMap = {};
-      headers.forEach((header, index) => {
-        for (const [field, possibleNames] of Object.entries(fieldMap)) {
-          if (possibleNames.some(name => header.includes(name))) {
-            columnMap[field] = index;
-            break;
-          }
-        }
-      });
-
-      let importCount = 0;
-      rows.forEach(row => {
-        if (row.length === 0 || !row.some(cell => cell)) return; // 跳过空行
-
-        const recordData = {};
-
-        // 提取数据
-        for (const [field, columnIndex] of Object.entries(columnMap)) {
-          if (columnIndex !== undefined && row[columnIndex] !== undefined) {
-            recordData[field] = String(row[columnIndex]).trim();
-          }
-        }
-
-        // 处理日期格式
-        if (recordData.date) {
-          const dateStr = String(recordData.date);
-          if (dateStr.includes('/')) {
-            const parts = dateStr.split('/');
-            if (parts.length === 3) {
-              recordData.date = `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
-            }
-          }
-        }
-
-        // 处理数值字段
-        ['cost', 'distance'].forEach(field => {
-          if (recordData[field]) {
-            const num = parseFloat(recordData[field]);
-            if (!isNaN(num)) {
-              recordData[field] = num;
-            }
-          }
-        });
-
-        if (recordData.date || recordData.trainNo) {
-          addRecordToTable(recordData);
-          importCount++;
-        }
-      });
-
-      if (importCount > 0) {
-        updateSequenceNumbers();
-        // 将表格数据同步到 records 并保存到当前模式的存储键
-        syncRecordsFromTable();
-        updateYearLegend();
-        updateStats();
-        redrawAllPaths();
-        alert(`成功从Excel导入 ${importCount} 条记录！`);
-      } else {
-        alert('Excel文件中没有找到有效的记录数据');
-      }
-
-    } catch (error) {
-      console.error('Excel导入失败:', error);
-      alert('Excel导入失败: ' + error.message);
-    }
-  };
-
-  reader.onerror = function () {
-    alert('读取Excel文件失败');
-  };
-
-  reader.readAsArrayBuffer(file);
-}
-
-// JSON导出功能
-function exportToJson() {
-  try {
-    const cfg = getEntityConfig();
-    const data = {
-      exportDate: new Date().toISOString(),
-      version: '8.0',
-      recordCount: records.length,
-      records: records.map((record, index) => {
-        let speed = '';
-        const durationMins = parseDurationToMinutes(record.duration);
-        if (record.distance > 0 && durationMins > 0) {
-          speed = (record.distance / (durationMins / 60)).toFixed(1);
-        }
-        return {
-          id: index + 1,
-          ...record,
-          pricePerKm: record.distance > 0 ? (record.cost / record.distance).toFixed(4) : '',
-          speed: speed
-        };
-      })
-    };
-
-    const jsonString = JSON.stringify(data, null, 2);
-    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
-
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-
-    const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10);
-    link.setAttribute('download', `${cfg.exportPrefix}_${dateStr}.json`);
-
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    alert(`成功导出 ${records.length} 条记录到JSON文件！`);
-
-  } catch (error) {
-    console.error('JSON导出失败:', error);
-    alert('JSON导出失败: ' + error.message);
-  }
-}
-
-// 数据备份功能
-function backupData() {
-  try {
-    const cfg = getEntityConfig();
-    const backupData = {
-      backupDate: new Date().toISOString(),
-      version: '8.0',
-      recordCount: records.length,
-      records: records, // 已包含每条的 pathWGS/pathGCJ（若已绘制）
-      geocodeCache: geocodeCache, // 额外：地理编码缓存，便于换浏览器无需重新请求
-      settings: {
-        currentMapType: currentMapType,
-        selectedYears: Array.from(selectedYears),
-        theme: document.body.classList.contains('dark') ? 'dark' : 'light',
-        entity: currentEntity
-      }
-    };
-
-    const jsonString = JSON.stringify(backupData, null, 2);
-    const blob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
-
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-
-    const now = new Date();
-    const dateStr = now.toISOString().slice(0, 19).replace(/:/g, '-');
-    link.setAttribute('download', `${cfg.backupPrefix}_${dateStr}.json`);
-
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    alert(`成功备份 ${records.length} 条记录和设置！`);
-
-  } catch (error) {
-    console.error('数据备份失败:', error);
-    alert('数据备份失败: ' + error.message);
-  }
-}
-
-// 数据恢复功能
-function restoreData(file) {
-  const reader = new FileReader();
-
-  reader.onload = function (e) {
-    try {
-      const backupData = JSON.parse(e.target.result);
-      const ver = backupData.version || '1.0';
-
-      if (!backupData.records || !Array.isArray(backupData.records)) {
-        alert('备份文件格式不正确');
-        return;
-      }
-
-      if (records.length > 0) {
-        if (!confirm(`当前有 ${records.length} 条记录，恢复备份将覆盖现有数据。是否继续？`)) {
-          return;
-        }
-      }
-
-      // 清空现有数据
-      records.length = 0;
-      tbody.innerHTML = '';
-
-      // 恢复记录数据（包含已缓存的路径坐标）
-      backupData.records.forEach(record => {
-        // 兼容旧版本：可能没有 pathWGS/pathGCJ
-        if (record.pathWGS && !Array.isArray(record.pathWGS)) delete record.pathWGS;
-        if (record.pathGCJ && !Array.isArray(record.pathGCJ)) delete record.pathGCJ;
-        addRecordToTable(record);
-      });
-
-      // 恢复地理编码缓存（1.1+）
-      if (ver >= '1.1' && backupData.geocodeCache && typeof backupData.geocodeCache === 'object') {
-        geocodeCache = backupData.geocodeCache;
-        saveGeocodeCache();
-        console.log(`已恢复地理编码缓存：${Object.keys(geocodeCache).length} 项 (v${ver})`);
-      } else if (!backupData.geocodeCache) {
-        console.log(`备份版本 ${ver} 未包含地理编码缓存字段，恢复后首次需要路径可能重新请求。`);
-      }
-
-      // 恢复设置
-      if (backupData.settings) {
-        const settings = backupData.settings;
-
-        // 恢复主题
-        if (settings.theme === 'dark' && !document.body.classList.contains('dark')) {
-          document.body.classList.add('dark');
-          themeToggle.textContent = '☀️ 切换到亮色';
-        } else if (settings.theme === 'light' && document.body.classList.contains('dark')) {
-          document.body.classList.remove('dark');
-          themeToggle.textContent = '🌙 切换到暗色';
-        }
-
-        // 恢复选中年份
-        if (settings.selectedYears) {
-          selectedYears.clear();
-          settings.selectedYears.forEach(year => selectedYears.add(year));
-        }
-
-        // 地点标记显示状态已废弃
-
-        // 恢复实体（火车/飞机）
-        if (settings.entity === 'plane' || settings.entity === 'train') {
-          currentEntity = settings.entity;
-          localStorage.setItem('entity', currentEntity);
-          applyEntityUI(currentEntity);
-        }
-      }
-
-      // 将表格数据同步到 records 并保存到当前模式的存储键
-      syncRecordsFromTable();
-
-      // 更新界面
-      updateSequenceNumbers();
-      updateYearLegend();
-      updateStats();
-      redrawAllPaths();
-
-      alert(`成功恢复 ${backupData.records.length} 条记录！`);
-
-    } catch (error) {
-      console.error('数据恢复失败:', error);
-      alert('数据恢复失败: ' + error.message);
-    }
-  };
-
-  reader.onerror = function () {
-    alert('读取备份文件失败');
-  };
-
-  reader.readAsText(file, 'UTF-8');
-}
+// backupData, restoreData 已迁移到 js/modules/backup_restore.js
 
 // Load records from localStorage on startup
 function initialLoad() {
@@ -4203,6 +2615,105 @@ window.onload = initialLoad;
 // ===================== Sorting Event Listeners =====================
 
 document.addEventListener('DOMContentLoaded', () => {
+  // === 地址坐标管理 UI 绑定 ===
+  const addrBtn = document.getElementById('addressManagerBtn');
+  const addrModal = document.getElementById('addressManagerModalOverlay');
+  const addrClose = document.getElementById('addressManagerCloseBtn');
+  const addAddrBtn = document.getElementById('addAddrBtn');
+
+  if (addrBtn && addrModal && addrClose && addAddrBtn) {
+    addrBtn.addEventListener('click', () => {
+      renderAddressManagerList();
+      addrModal.style.display = 'flex';
+    });
+
+    addrClose.addEventListener('click', () => {
+      addrModal.style.display = 'none';
+      // 提示用户可能需要重新绘制
+      showToast('提示：如果修改了已画线的坐标，请点击"重新绘制线路"生效。', 'info');
+    });
+
+    // 新增：坐标类型实时切换逻辑
+    const radios = document.querySelectorAll('input[name="coordType"]');
+    const lngInput = document.getElementById('addAddrLng');
+    const latInput = document.getElementById('addAddrLat');
+    window._currentCoordType = 'wgs84';
+
+    radios.forEach(radio => {
+      radio.addEventListener('change', (e) => {
+        const newType = e.target.value;
+        if (newType === window._currentCoordType) return;
+
+        const lng = parseFloat(lngInput.value);
+        const lat = parseFloat(latInput.value);
+
+        if (!isNaN(lng) && !isNaN(lat)) {
+          if (window._currentCoordType === 'wgs84' && newType === 'gcj02') {
+            const gcj = typeof wgs84ToGcj02 === 'function' ? wgs84ToGcj02(lng, lat) : [lng, lat];
+            lngInput.value = gcj[0].toFixed(6);
+            latInput.value = gcj[1].toFixed(6);
+          } else if (window._currentCoordType === 'gcj02' && newType === 'wgs84') {
+            const wgs = typeof gcj02ToWgs84 === 'function' ? gcj02ToWgs84(lng, lat) : [lng, lat];
+            lngInput.value = wgs[0].toFixed(6);
+            latInput.value = wgs[1].toFixed(6);
+          }
+        }
+        window._currentCoordType = newType;
+      });
+    });
+
+    // 新增：清空按钮逻辑
+    const clearAddrBtn = document.getElementById('clearAddrBtn');
+    if (clearAddrBtn) {
+      clearAddrBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        document.getElementById('addAddrName').value = '';
+        lngInput.value = '';
+        latInput.value = '';
+        document.getElementById('addrFormTitle').textContent = '新增 / 编辑坐标';
+        const wgsRadio = document.querySelector('input[name="coordType"][value="wgs84"]');
+        if (wgsRadio) wgsRadio.checked = true;
+        window._currentCoordType = 'wgs84';
+      });
+    }
+
+    addAddrBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const nameElem = document.getElementById('addAddrName');
+
+      const name = nameElem.value.trim();
+      let lng = parseFloat(lngInput.value);
+      let lat = parseFloat(latInput.value);
+
+      if (!name) return alert('请输入地点名称');
+      if (isNaN(lng) || isNaN(lat)) return alert('请输入有效的经纬度数值');
+      if (lng < -180 || lng > 180 || lat < -90 || lat > 90) return alert('经纬度超出合理范围');
+
+      // 如果当前是 GCJ-02 视图，则必须转换为 WGS-84 保存（核心系统字典全跑 WGS-84）
+      if (window._currentCoordType === 'gcj02') {
+        const wgs = typeof gcj02ToWgs84 === 'function' ? gcj02ToWgs84(lng, lat) : [lng, lat];
+        lng = wgs[0];
+        lat = wgs[1];
+      }
+
+      window.customAddresses[name] = [lng, lat];
+      saveCustomAddresses();
+      renderAddressManagerList();
+
+      // 清空输入框并重置状态
+      nameElem.value = '';
+      lngInput.value = '';
+      latInput.value = '';
+      document.getElementById('addrFormTitle').textContent = '新增 / 编辑坐标';
+      const wgsRadio = document.querySelector('input[name="coordType"][value="wgs84"]');
+      if (wgsRadio) wgsRadio.checked = true;
+      window._currentCoordType = 'wgs84';
+    });
+  }
+  // ==============================
+
   // Sorting
   document.querySelectorAll('.sortable').forEach(th => {
     th.addEventListener('click', () => {
@@ -4219,6 +2730,79 @@ document.addEventListener('DOMContentLoaded', () => {
       m.classList.remove('open');
     });
   });
+
+  // Line width slider listener
+  const lineWidthSlider = document.getElementById('lineWidthSlider');
+  const lineWidthValue = document.getElementById('lineWidthValue');
+  if (lineWidthSlider && lineWidthValue) {
+    lineWidthSlider.addEventListener('input', (e) => {
+      window.mapLineWidth = parseFloat(e.target.value);
+      lineWidthValue.textContent = window.mapLineWidth.toFixed(1);
+      // Redraw paths to apply new width
+      updatePathVisibility(); // Depending on implementation, you might need to recreate them
+      // We will actually just update the existing overlays if possible, or trigger a full redraw
+      // Trigger full render to update paths if needed, or we can update overlays
+      Array.from(tbody.children).forEach(tr => {
+        if (tr._overlays && tr.style.display !== 'none') {
+          tr._overlays.forEach(overlay => {
+            if (currentMapType === 'amap') {
+              if (overlay.setOptions && overlay.getPath) {
+                overlay.setOptions({ strokeWeight: window.mapLineWidth });
+              }
+            } else if (currentMapType === 'google') {
+              if (overlay.setOptions && overlay.getPath) {
+                overlay.setOptions({ strokeWeight: window.mapLineWidth });
+              }
+            } else if (currentMapType === 'leaflet') {
+              if (overlay.setStyle && overlay.getLatLngs) {
+                overlay.setStyle({ weight: window.mapLineWidth });
+              }
+            }
+          });
+        }
+      });
+    });
+  }
+
+  // 透明度滑块事件
+  const lineOpacitySlider = document.getElementById('lineOpacitySlider');
+  const lineOpacityValue = document.getElementById('lineOpacityValue');
+  if (lineOpacitySlider && lineOpacityValue) {
+    lineOpacitySlider.addEventListener('input', (e) => {
+      window.mapLineOpacity = parseFloat(e.target.value);
+      lineOpacityValue.textContent = window.mapLineOpacity.toFixed(1);
+      // 实时更新所有可见线条的透明度
+      Array.from(tbody.children).forEach(tr => {
+        if (tr._overlays && tr.style.display !== 'none') {
+          tr._overlays.forEach(overlay => {
+            if (currentMapType === 'amap') {
+              if (overlay.setOptions && overlay.getPath) {
+                overlay.setOptions({ strokeOpacity: window.mapLineOpacity });
+              }
+            } else if (currentMapType === 'google') {
+              if (overlay.setOptions && overlay.getPath) {
+                overlay.setOptions({ strokeOpacity: window.mapLineOpacity });
+              }
+            } else if (currentMapType === 'leaflet') {
+              if (overlay.setStyle && overlay.getLatLngs) {
+                overlay.setStyle({ opacity: window.mapLineOpacity });
+              }
+            }
+          });
+        }
+      });
+    });
+  }
+
+  // 线路编辑按钮事件
+  const finishEditBtn = document.getElementById('finishEditBtn');
+  if (finishEditBtn) {
+    finishEditBtn.addEventListener('click', finishPolylineEdit);
+  }
+  const cancelEditBtn = document.getElementById('cancelEditBtn');
+  if (cancelEditBtn) {
+    cancelEditBtn.addEventListener('click', cancelPolylineEdit);
+  }
 });
 
 // Debounce helper
@@ -4235,270 +2819,8 @@ function debounce(func, wait) {
 }
 
 // ===================== Gemini Q&A Feature =====================
+// 已迁移到 js/modules/gemini_qa.js
 
-if (askGeminiBtn) {
-  askGeminiBtn.addEventListener('click', () => {
-    geminiQAModalOverlay.style.display = 'flex';
-    // Add delay to ensure modal is rendered before focusing
-    setTimeout(() => {
-      geminiQAInput.focus();
-    }, 100);
-  });
-}
-
-if (geminiQACloseBtn) {
-  geminiQACloseBtn.addEventListener('click', () => {
-    geminiQAModalOverlay.style.display = 'none';
-  });
-}
-
-if (geminiQAModalOverlay) {
-  geminiQAModalOverlay.addEventListener('click', (e) => {
-    if (e.target === geminiQAModalOverlay) {
-      geminiQAModalOverlay.style.display = 'none';
-    }
-  });
-}
-
-if (geminiQASendBtn) {
-  geminiQASendBtn.addEventListener('click', submitGeminiQuestion);
-}
-
-if (geminiQAInput) {
-  // Prevent global key handlers from interfering
-  geminiQAInput.addEventListener('keydown', (e) => {
-    e.stopPropagation();
-  });
-
-  geminiQAInput.addEventListener('keypress', (e) => {
-    e.stopPropagation();
-    if (e.key === 'Enter') submitGeminiQuestion();
-  });
-}
-
-// --- AI API Key Management ---
-function getAIKey() {
-  const config = API_CONFIG.getAIConfig();
-  return config.key;
-}
-
-window.saveAIKey = function () {
-  const input = document.getElementById('aiKeyInput');
-  if (input && input.value.trim()) {
-    localStorage.setItem('ai_api_key', input.value.trim());
-    alert('API Key 已保存！请重新发送消息。');
-    // Remove the form or just let user re-click send
-    const form = input.closest('.api-config-form').parentElement; // div.message
-    if (form) form.remove();
-  } else {
-    alert('请输入有效的 API Key');
-  }
-};
-
-async function submitGeminiQuestion() {
-  const question = geminiQAInput.value.trim();
-  if (!question) return;
-
-  // Append user question to chat
-  appendMessage('user', question);
-  geminiQAInput.value = '';
-
-  // Check API Key
-  const apiKey = getAIKey();
-  if (!apiKey) {
-    appendMessage('gemini', `
-      <div class="api-config-form">
-        <p>⚠️ 检测到未配置 AI API Key，请配置：</p>
-        <input type="password" id="aiKeyInput" placeholder="在此输入 API Key (ChatAnywhere/OpenAI)" />
-        <button onclick="saveAIKey()">💾 保存配置</button>
-        <p style="margin-top:8px;font-size:12px;opacity:0.8;">Key 将仅存储在您的浏览器本地缓存中。</p>
-      </div>
-    `);
-    return;
-  }
-
-  // Show loading
-  const loadingId = appendMessage('gemini', '<div class="typing-indicator"><span></span><span></span><span></span></div>');
-
-  try {
-    // Load ALL records for comprehensive context, matching index.js logic
-    let trains = [];
-    let planes = [];
-    try { trains = JSON.parse(localStorage.getItem('trainRecords')) || []; } catch (e) { }
-    try { planes = JSON.parse(localStorage.getItem('planeRecords')) || []; } catch (e) { }
-
-    // Combine and include all relevant fields
-    const allRecords = [
-      ...trains.map(r => ({
-        type: 'Train',
-        date: r.date,
-        time: r.time,
-        duration: r.duration,
-        trainNo: r.trainNo,
-        startStation: r.startStation,
-        startCity: r.startCity,
-        endStation: r.endStation,
-        endCity: r.endCity,
-        seatClass: r.seatClass,
-        trainType: r.trainType,
-        bureau: r.bureau,
-        cost: r.cost,
-        distance: r.distance,
-        notes: r.notes
-      })),
-      ...planes.map(r => ({
-        type: 'Plane',
-        date: r.date,
-        time: r.time,
-        duration: r.duration,
-        flightNo: r.trainNo, // Map trainNo to flightNo for planes
-        startAirport: r.startStation, // Map startStation to startAirport
-        startCity: r.startCity,
-        endAirport: r.endStation, // Map endStation to endAirport
-        endCity: r.endCity,
-        seatClass: r.seatClass,
-        planeType: r.trainType, // Map trainType to planeType
-        airline: r.bureau, // Map bureau to airline
-        cost: r.cost,
-        distance: r.distance,
-        notes: r.notes
-      }))
-    ];
-
-    const dataContext = JSON.stringify(allRecords);
-    const prompt = `你是一个旅行数据分析助手。以下是用户的旅行记录数据（JSON格式，包含火车和飞机记录）：
-${dataContext}
-
-用户问题：${question}
-
-请回答问题。如果需要列出具体行程，请使用自然语言或Markdown列表的形式（例如：“2023年1月1日从北京去往上海，乘坐G123次列车”），**绝对不要**直接输出JSON格式的数据。`;
-
-    const response = await callAIAPI(prompt);
-
-    // Remove loading and show response
-    const loadingEl = document.getElementById(loadingId);
-    if (loadingEl) loadingEl.remove();
-
-    if (typeof marked !== 'undefined') {
-      appendMessage('gemini', marked.parse(response));
-    } else {
-      appendMessage('gemini', response);
-    }
-
-  } catch (error) {
-    console.error('AI Q&A Error:', error);
-    const loadingEl = document.getElementById(loadingId);
-    if (loadingEl) loadingEl.remove();
-    appendMessage('gemini', `❌ 请求失败: ${error.message}`);
-  }
-}
-
-// Close on ESC
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && geminiQAModalOverlay.style.display === 'flex') {
-    geminiQAModalOverlay.style.display = 'none';
-  }
-});
-
-function appendMessage(role, content) {
-  const msgDiv = document.createElement('div');
-  msgDiv.className = `chat-message ${role}`;
-
-  const bubble = document.createElement('div');
-  bubble.className = 'chat-bubble';
-
-  if (role === 'user') {
-    bubble.textContent = content;
-  } else {
-    bubble.innerHTML = content;
-  }
-
-  msgDiv.appendChild(bubble);
-
-  const id = 'msg-' + Date.now();
-  msgDiv.id = id;
-
-  geminiQAChatHistory.appendChild(msgDiv);
-  geminiQAChatHistory.scrollTop = geminiQAChatHistory.scrollHeight;
-  return id;
-}
-
-async function callAIAPI(prompt) {
-  const config = API_CONFIG.getAIConfig(); // Dynamic Config
-  if (!config.key) throw new Error('API Key missing');
-
-  const apiUrl = config.endpoint;
-  const model = config.model;
-
-  if (config.provider === 'gemini') {
-    // Gemini Official
-    // Endpoint base: https://generativelanguage.googleapis.com/v1beta/models
-    // Full URL: BASE/{MODEL}:generateContent?key={KEY}
-
-    let urlWithKey;
-    if (apiUrl.includes(':generateContent')) {
-      urlWithKey = `${apiUrl}?key=${config.key}`;
-    } else {
-      const modelName = config.model || 'gemini-pro';
-      urlWithKey = `${apiUrl}/${modelName}:generateContent?key=${config.key}`;
-    }
-
-    const payload = {
-      contents: [{
-        parts: [{ text: prompt }]
-      }]
-    };
-
-    const response = await fetch(urlWithKey, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Gemini API Error: ${response.status} - ${errorText}`);
-    }
-
-    const result = await response.json();
-    if (result.candidates && result.candidates.length > 0 && result.candidates[0].content) {
-      return result.candidates[0].content.parts[0].text;
-    } else {
-      throw new Error('No valid response from Gemini API');
-    }
-
-  } else {
-    // Custom / OpenAI Compatible
-    const payload = {
-      model: model,
-      messages: [
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.7
-    };
-
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.key}`
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
-    }
-
-    const result = await response.json();
-    if (result.choices && result.choices.length > 0 && result.choices[0].message) {
-      return result.choices[0].message.content;
-    } else {
-      throw new Error('No valid response from AI API');
-    }
-  }
-}
 
 // 谷歌地图API加载完成回调
 
@@ -4520,241 +2842,8 @@ window.initGoogleMapsAPI = function realInitGoogleMapsAPI() {
 
 
 // ===================== 年度报告功能 =====================
-const yearlyReportBtn = document.getElementById('yearlyReportBtn');
-const reportModalOverlay = document.getElementById('reportModalOverlay');
-const closeReportBtn = document.getElementById('closeReportBtn');
-const generateReportBtn = document.getElementById('generateReportBtn');
-const reportYearSelect = document.getElementById('reportYearSelect');
-const reportContent = document.getElementById('reportContent');
-const saveReportImgBtn = document.getElementById('saveReportImgBtn');
+// 已迁移到 js/modules/yearly_report.js
 
-if (yearlyReportBtn) {
-  yearlyReportBtn.addEventListener('click', openYearlyReport);
-}
-if (closeReportBtn) {
-  closeReportBtn.addEventListener('click', () => {
-    reportModalOverlay.style.display = 'none';
-  });
-}
-if (generateReportBtn) {
-  generateReportBtn.addEventListener('click', generateYearlyReport);
-}
-if (saveReportImgBtn) {
-  saveReportImgBtn.addEventListener('click', saveReportImage);
-}
-
-function openYearlyReport() {
-  reportModalOverlay.style.display = 'flex';
-  // Populate years
-  const years = [...new Set(records.filter(r => r.date).map(r => r.date.substring(0, 4)))].sort().reverse();
-  reportYearSelect.innerHTML = '<option value="">选择年份...</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
-  // Reset content
-  reportContent.innerHTML = '<div style="padding:40px; text-align:center; color:#666;">请选择年份并点击生成</div>';
-  saveReportImgBtn.style.display = 'none';
-}
-
-function generateYearlyReport() {
-  try {
-    const year = reportYearSelect.value;
-    if (!year) {
-      alert('请先选择年份');
-      return;
-    }
-
-    const yearRecords = records.filter(r => r.date && r.date.startsWith(year));
-    if (yearRecords.length === 0) {
-      reportContent.innerHTML = '<div style="padding:40px; text-align:center; color:#666;">该年份没有出行记录</div>';
-      saveReportImgBtn.style.display = 'none';
-      return;
-    }
-
-    // Calculate Stats
-    const totalTrips = yearRecords.length;
-    const totalDistance = yearRecords.reduce((sum, r) => sum + (r.distance || 0), 0);
-    const totalCost = yearRecords.reduce((sum, r) => sum + (r.cost || 0), 0);
-    const totalDurationMins = yearRecords.reduce((sum, r) => sum + parseDurationToMinutes(r.duration), 0);
-    const totalDurationHrs = (totalDurationMins / 60).toFixed(1);
-
-    // Top Destination
-    const cityCounts = {};
-    yearRecords.forEach(r => {
-      if (r.endCity) cityCounts[r.endCity] = (cityCounts[r.endCity] || 0) + 1;
-    });
-    const topCity = Object.keys(cityCounts).sort((a, b) => cityCounts[b] - cityCounts[a])[0] || '未知';
-
-    // New Metrics
-    // 1. Most Active Month
-    const monthCounts = {};
-    yearRecords.forEach(r => {
-      if (r.date) {
-        const m = parseInt(r.date.substring(5, 7), 10);
-        monthCounts[m] = (monthCounts[m] || 0) + 1;
-      }
-    });
-    const topMonth = Object.keys(monthCounts).sort((a, b) => monthCounts[b] - monthCounts[a])[0];
-    const topMonthCount = monthCounts[topMonth] || 0;
-
-    // 2. Longest Distance Trip
-    const longestTrip = [...yearRecords].sort((a, b) => (b.distance || 0) - (a.distance || 0))[0];
-
-    // 3. Most Expensive Trip
-    const mostExpensiveTrip = [...yearRecords].sort((a, b) => (b.cost || 0) - (a.cost || 0))[0];
-
-    // 4. Longest Duration Trip
-    const longestDurationTrip = [...yearRecords].sort((a, b) => parseDurationToMinutes(b.duration) - parseDurationToMinutes(a.duration))[0];
-
-    // 5. First & Last Trip
-    const sortedByDate = [...yearRecords].sort((a, b) => {
-      const da = new Date((a.date || '') + ' ' + (a.time || '00:00'));
-      const db = new Date((b.date || '') + ' ' + (b.time || '00:00'));
-      return da - db;
-    });
-    const firstTrip = sortedByDate[0];
-    const lastTrip = sortedByDate[sortedByDate.length - 1];
-
-    // Helper to format trip
-    const fmtTrip = (r) => `${r.date.substring(5)} ${r.startCity}→${r.endCity}`;
-    const fmtTripStation = (r) => `${r.date.substring(5)} ${r.startStation} (${r.startCity}) → ${r.endStation} (${r.endCity})`;
-
-    // Render HTML
-    const html = `
-      <div class="report-container">
-        <div class="report-header">
-          <div class="report-title">年度出行报告</div>
-          <div class="report-year">${year}</div>
-          <div class="report-subtitle">我的足迹与回忆</div>
-        </div>
-
-        <div class="report-section">
-          <div class="report-stat-grid">
-            <div class="report-stat-item">
-              <div class="report-stat-val">${totalTrips}</div>
-              <div class="report-stat-label">出行次数</div>
-            </div>
-            <div class="report-stat-item">
-              <div class="report-stat-val">${Math.round(totalDistance).toLocaleString()}</div>
-              <div class="report-stat-label">总里程 (km)</div>
-            </div>
-            <div class="report-stat-item">
-              <div class="report-stat-val">${totalDurationHrs}</div>
-              <div class="report-stat-label">在路上 (小时)</div>
-            </div>
-            <div class="report-stat-item">
-              <div class="report-stat-val">${Math.round(totalCost).toLocaleString()}</div>
-              <div class="report-stat-label">总花费 (元)</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="report-section">
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px;">
-            <div style="background:rgba(102, 126, 234, 0.1); padding:15px; border-radius:8px; text-align:center;">
-              <div style="font-size:12px; color:#666;">最钟情的城市</div>
-              <div style="font-size:20px; font-weight:bold; color:#333; margin:5px 0;">${topCity}</div>
-              <div style="font-size:11px; color:#999;">到达 ${cityCounts[topCity]} 次</div>
-            </div>
-            <div style="background:rgba(118, 75, 162, 0.1); padding:15px; border-radius:8px; text-align:center;">
-              <div style="font-size:12px; color:#666;">最繁忙的月份</div>
-              <div style="font-size:20px; font-weight:bold; color:#333; margin:5px 0;">${topMonth}月</div>
-              <div style="font-size:11px; color:#999;">出行 ${topMonthCount} 次</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="report-section">
-          <h4 style="margin:0 0 15px 0; text-align:center; color:#333; font-size:16px;">年度之最</h4>
-
-          <div style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; font-size:13px;">
-            <span style="color:#666;">📏 最远的一次</span>
-            <span style="font-weight:bold; color:#333;">${longestTrip ? fmtTrip(longestTrip) : '-'}</span>
-            <span style="color:#667eea;">${longestTrip ? longestTrip.distance + 'km' : ''}</span>
-          </div>
-
-          <div style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; font-size:13px;">
-            <span style="color:#666;">💰 最贵的一次</span>
-            <span style="font-weight:bold; color:#333;">${mostExpensiveTrip ? fmtTrip(mostExpensiveTrip) : '-'}</span>
-            <span style="color:#f6ad55;">¥${mostExpensiveTrip ? mostExpensiveTrip.cost : ''}</span>
-          </div>
-
-          <div style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; font-size:13px;">
-            <span style="color:#666;">⏳ 最久的一次</span>
-            <span style="font-weight:bold; color:#333;">${longestDurationTrip ? fmtTrip(longestDurationTrip) : '-'}</span>
-            <span style="color:#48bb78;">${longestDurationTrip ? longestDurationTrip.duration : ''}</span>
-          </div>
-        </div>
-
-        <div class="report-section" style="background:#fafafa;">
-          <h4 style="margin:0 0 15px 0; text-align:center; color:#333; font-size:16px;">时光轨迹</h4>
-
-          <div style="position:relative; padding-left:20px; border-left:2px solid #ddd; margin-left:10px;">
-            <div style="position:absolute; left:-6px; top:0; width:10px; height:10px; background:#667eea; border-radius:50%;"></div>
-            <div style="margin-bottom:20px;">
-              <div style="font-size:12px; color:#999;">${year}年的开始</div>
-              <div style="font-size:14px; font-weight:bold; color:#333;">${firstTrip ? fmtTripStation(firstTrip) : '-'}</div>
-              <div style="font-size:12px; color:#666;">${firstTrip ? (firstTrip.trainNo || firstTrip.trainType) : ''}</div>
-            </div>
-
-            <div style="position:absolute; left:-6px; bottom:0; width:10px; height:10px; background:#764ba2; border-radius:50%;"></div>
-            <div>
-              <div style="font-size:12px; color:#999;">${year}年的收官</div>
-              <div style="font-size:14px; font-weight:bold; color:#333;">${lastTrip ? fmtTripStation(lastTrip) : '-'}</div>
-              <div style="font-size:12px; color:#666;">${lastTrip ? (lastTrip.trainNo || lastTrip.trainType) : ''}</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="report-footer">
-          <div class="report-logo">Train & Flight Records</div>
-          <div>Generated by Your Personal Travel Assistant</div>
-          <div>${new Date().toLocaleDateString()}</div>
-        </div>
-      </div>
-    `;
-
-    reportContent.innerHTML = html;
-    saveReportImgBtn.style.display = 'block';
-
-  } catch (error) {
-    console.error('生成年度报告失败:', error);
-    alert('生成年度报告时发生错误: ' + error.message);
-  }
-}
-
-// Close report on ESC
-window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && reportModalOverlay.style.display === 'flex') {
-    reportModalOverlay.style.display = 'none';
-  }
-});
-
-function saveReportImage() {
-  if (!window.html2canvas) {
-    alert('html2canvas 库未加载，无法生成图片');
-    return;
-  }
-
-  const btn = saveReportImgBtn;
-  btn.textContent = '⏳ 生成中...';
-  btn.disabled = true;
-
-  html2canvas(document.querySelector('.report-container'), {
-    scale: 2, // 高清
-    useCORS: true,
-    backgroundColor: null // 保持透明或背景色
-  }).then(canvas => {
-    const link = document.createElement('a');
-    link.download = `Travel_Report_${reportYearSelect.value}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
-    btn.textContent = '💾 保存为图片';
-    btn.disabled = false;
-  }).catch(err => {
-    console.error('截图失败:', err);
-    alert('生成图片失败');
-    btn.textContent = '💾 保存为图片';
-    btn.disabled = false;
-  });
-}
 
 // ============ Map Interaction Enhancements ============
 // 按住 Command (Mac) 或 Alt (Windows) 键开启地图缩放
@@ -4766,11 +2855,60 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// ===================== Global Unified ESC Handler =====================
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+
+  // 1. Context Menu
+  const contextMenu = document.getElementById('polylineContextMenu');
+  if (contextMenu && contextMenu.style.display === 'block') {
+    contextMenu.style.display = 'none';
+  }
+
+  // 2. Route Info Modal (Dynamic)
+  const routeModal = document.getElementById('routeInfoModal');
+  if (routeModal && routeModal.style.display === 'flex') {
+    const content = routeModal.querySelector('#routeInfoContent');
+    routeModal.style.opacity = '0';
+    if (content) content.style.transform = 'translateY(20px)';
+    setTimeout(() => routeModal.style.display = 'none', 200);
+  }
+
+  // 3. Overlay Modals
+  const overlays = [
+    { id: 'geminiQAModalOverlay' },
+    { id: 'reportModalOverlay' },
+    { id: 'customRouteOverlay', closeBtn: 'customRouteCloseBtn' },
+    { id: 'replayOverlay', closeBtn: 'replayCloseBtn' },
+    { id: 'featuresHelpOverlay' },
+    { id: 'addressManagerModalOverlay', closeBtn: 'addressManagerCloseBtn' },
+    { id: 'cloudSettingsModalOverlay', closeBtn: 'cloudSettingsCancelBtn' }
+  ];
+
+  overlays.forEach(overlay => {
+    const el = document.getElementById(overlay.id);
+    if (el && (el.style.display === 'flex' || el.style.display === 'block')) {
+      if (overlay.closeBtn) {
+        const btn = document.getElementById(overlay.closeBtn);
+        if (btn) btn.click();
+      } else {
+        el.style.display = 'none';
+      }
+    }
+  });
+
+  // 4. Table Action Menus
+  document.querySelectorAll('.action-menu.open').forEach(m => {
+    m.classList.remove('open');
+  });
+});
+
 window.addEventListener('keyup', (e) => {
   if (isZoomKey(e) && currentMapType === 'amap' && amapInstance) {
     amapInstance.setStatus({ scrollWheel: false });
   }
 });
+
 
 
 

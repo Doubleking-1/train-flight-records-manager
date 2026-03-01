@@ -17,14 +17,20 @@ function updateAllTimeSummary() {
   const container = document.getElementById('allStatsGrid');
   if (!container) return;
 
-  const totalTrips = records.length;
-  const totalCost = records.reduce((sum, r) => sum + (r.cost || 0), 0);
-  const totalDistance = records.reduce((sum, r) => sum + (r.distance || 0), 0);
-  const totalMinutes = records.reduce((sum, r) => sum + parseDurationToMinutes(r.duration), 0);
+  const filteredRecords = records.filter(r => {
+    if (typeof isUserDeselectedAll !== 'undefined' && isUserDeselectedAll) return false;
+    const year = r.date ? r.date.substring(0, 4) : new Date().getFullYear().toString();
+    return selectedYears.has(year);
+  });
+
+  const totalTrips = filteredRecords.length;
+  const totalCost = filteredRecords.reduce((sum, r) => sum + (r.cost || 0), 0);
+  const totalDistance = filteredRecords.reduce((sum, r) => sum + (r.distance || 0), 0);
+  const totalMinutes = filteredRecords.reduce((sum, r) => sum + parseDurationToMinutes(r.duration), 0);
 
   // 统计城市（仅统计终点城市）
   const cities = new Set();
-  records.forEach(r => {
+  filteredRecords.forEach(r => {
     if (r.endCity && r.endCity.trim()) {
       cities.add(r.endCity.trim());
     } else if (!r.endCity && r.endStation) { // 兼容无城市仅有站名的情况
@@ -33,13 +39,13 @@ function updateAllTimeSummary() {
   });
 
   // 找出最远和最近的行程
-  const longestTrip = records.reduce((a, r) => (r.distance || 0) > (a.distance || 0) ? r : a, records[0]);
+  const longestTrip = filteredRecords.length ? filteredRecords.reduce((a, r) => (r.distance || 0) > (a.distance || 0) ? r : a, filteredRecords[0]) : null;
 
   // 找出时长最长的行程
-  const longestDurationTrip = records.reduce((a, r) => parseDurationToMinutes(r.duration) > parseDurationToMinutes(a.duration) ? r : a, records[0]);
+  const longestDurationTrip = filteredRecords.length ? filteredRecords.reduce((a, r) => parseDurationToMinutes(r.duration) > parseDurationToMinutes(a.duration) ? r : a, filteredRecords[0]) : null;
 
   // 找出最贵和最便宜的行程
-  const mostExpensive = records.reduce((a, r) => (r.cost || 0) > (a.cost || 0) ? r : a, records[0]);
+  const mostExpensive = filteredRecords.length ? filteredRecords.reduce((a, r) => (r.cost || 0) > (a.cost || 0) ? r : a, filteredRecords[0]) : null;
 
   // 平均值
   const avgCost = totalTrips > 0 ? (totalCost / totalTrips).toFixed(2) : 0;
@@ -48,6 +54,7 @@ function updateAllTimeSummary() {
 
   // 辅助函数：格式化行程显示
   const fmtTrip = (r) => {
+    if (!r) return '无';
     const start = r.startCity || r.startStation;
     const end = r.endCity || r.endStation;
     return `${start} → ${end}`;
@@ -114,6 +121,9 @@ function updateAllTimeSummary() {
   document.getElementById('stat-longest-dist').onclick = () => highlightRecord(longestTrip);
   document.getElementById('stat-longest-time').onclick = () => highlightRecord(longestDurationTrip);
   document.getElementById('stat-most-exp').onclick = () => highlightRecord(mostExpensive);
+
+  // 渲染车次类型统计图
+  try { renderTrainTypeCharts(filteredRecords, 'all'); } catch (e) { console.warn('[Statistics] 车次类型图渲染失败:', e); }
 }
 
 console.log('[Statistics Module] updateAllTimeSummary 已加载');
@@ -237,8 +247,150 @@ function updateYearlySummary(year) {
   document.getElementById('stat-year-longest-dist').onclick = () => highlightRecord(longestTrip);
   document.getElementById('stat-year-longest-time').onclick = () => highlightRecord(longestDurationTrip);
   document.getElementById('stat-year-most-exp').onclick = () => highlightRecord(mostExpensive);
+
+  // 渲染车次类型统计图（年度）
+  try { renderTrainTypeCharts(yearRecords, 'year'); } catch (e) { console.warn('[Statistics] 年度车次类型图渲染失败:', e); }
 }
 
 console.log('[Statistics Module] updateYearlySummary 已加载');
 
+// ===========================================
+// 3. 车次类型柱状统计图 (Train Type Bar Charts)
+// ===========================================
+
+// Chart instances cache
+const _ttCharts = {};
+
+/**
+ * 根据车次号首字母判断列车类型
+ * G=高铁 D=动车 C=城际 S=市郊 Z=直达 T=特快 K=快速 纯数字=普快 Y=旅游 其他=其他
+ */
+function getTrainTypeCategory(trainNo) {
+  if (!trainNo || !trainNo.trim()) return '其他';
+  const first = trainNo.trim().charAt(0).toUpperCase();
+  const map = { G: '高铁', D: '动车', C: '城际', S: '市郊', Z: '直达', T: '特快', K: '快速', Y: '旅游' };
+  if (map[first]) return map[first];
+  if (/^\d/.test(first)) return '普快';
+  return '其他';
+}
+
+// Ordered category labels
+const TRAIN_TYPE_ORDER = ['高铁', '动车', '城际', '市郊', '直达', '特快', '快速', '普快', '旅游', '其他'];
+
+// Colors per category
+const TRAIN_TYPE_COLORS = {
+  '高铁': 'rgba(66, 133, 244, 0.75)',
+  '动车': 'rgba(52, 168, 83, 0.75)',
+  '城际': 'rgba(251, 188, 4, 0.75)',
+  '市郊': 'rgba(154, 160, 166, 0.75)',
+  '直达': 'rgba(234, 67, 53, 0.75)',
+  '特快': 'rgba(255, 112, 67, 0.75)',
+  '快速': 'rgba(171, 71, 188, 0.75)',
+  '普快': 'rgba(121, 85, 72, 0.75)',
+  '旅游': 'rgba(0, 188, 212, 0.75)',
+  '其他': 'rgba(158, 158, 158, 0.75)'
+};
+
+/**
+ * 渲染车次类型统计图表
+ * @param {Array} recs - 要统计的记录数组
+ * @param {string} prefix - canvas ID 前缀: 'all' 或 'year'
+ */
+function renderTrainTypeCharts(recs, prefix) {
+  if (typeof Chart === 'undefined') return;
+
+  const wrapEl = document.getElementById('trainTypeChartsPanel');
+
+  // 仅在火车模式下显示
+  if (currentEntity === 'plane' || !recs || recs.length === 0) {
+    if (wrapEl) wrapEl.style.display = 'none';
+    return;
+  }
+  if (wrapEl) wrapEl.style.display = 'block';
+
+  // 聚合数据
+  const agg = {};
+  TRAIN_TYPE_ORDER.forEach(t => { agg[t] = { count: 0, cost: 0, dist: 0, dur: 0 }; });
+
+  recs.forEach(r => {
+    const cat = getTrainTypeCategory(r.trainNo);
+    agg[cat].count++;
+    agg[cat].cost += (r.cost || 0);
+    agg[cat].dist += (r.distance || 0);
+    agg[cat].dur += parseDurationToMinutes(r.duration);
+  });
+
+  // 只显示有数据的类别
+  const labels = TRAIN_TYPE_ORDER.filter(t => agg[t].count > 0);
+  const counts = labels.map(t => agg[t].count);
+  const costs = labels.map(t => Math.round(agg[t].cost));
+  const dists = labels.map(t => Math.round(agg[t].dist));
+  const durs = labels.map(t => +(agg[t].dur / 60).toFixed(1));
+  const bgColors = labels.map(t => TRAIN_TYPE_COLORS[t]);
+
+  const isDark = document.body.classList.contains('dark');
+  const textColor = isDark ? '#ccc' : '#666';
+
+  const makeOptions = (unit) => ({
+    responsive: true,
+    maintainAspectRatio: true,
+    layout: { padding: { bottom: 5 } },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => `${ctx.parsed.y.toLocaleString()} ${unit}`
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { color: textColor, font: { size: 11 }, maxRotation: 0, autoSkip: false }
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' },
+        ticks: { color: textColor, font: { size: 10 } }
+      }
+    }
+  });
+
+  const chartDefs = [
+    { id: 'trainTypeCountChart', data: counts, unit: '次' },
+    { id: 'trainTypeCostChart', data: costs, unit: '元' },
+    { id: 'trainTypeDistChart', data: dists, unit: 'km' },
+    { id: 'trainTypeDurChart', data: durs, unit: '小时' }
+  ];
+
+  chartDefs.forEach(def => {
+    const canvas = document.getElementById(def.id);
+    if (!canvas) return;
+
+    // Destroy previous instance
+    if (_ttCharts[def.id]) {
+      _ttCharts[def.id].destroy();
+      _ttCharts[def.id] = null;
+    }
+
+    _ttCharts[def.id] = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          data: def.data,
+          backgroundColor: bgColors,
+          borderWidth: 0,
+          borderRadius: 3,
+          barPercentage: 0.7
+        }]
+      },
+      options: makeOptions(def.unit)
+    });
+  });
+}
+
+console.log('[Statistics Module] renderTrainTypeCharts 已加载');
+
 console.log('[Statistics Module] ✅ 全部加载完成');
+
