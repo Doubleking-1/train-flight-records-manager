@@ -244,6 +244,120 @@ function getArrowHtml(heading, color) {
   </div>`;
 }
 
+// --- 渐变色辅助函数 ---
+function hexToRgb(hex) {
+  hex = hex.replace('#', '');
+  if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+  return { r: parseInt(hex.substring(0, 2), 16), g: parseInt(hex.substring(2, 4), 16), b: parseInt(hex.substring(4, 6), 16) };
+}
+function rgbToHex(r, g, b) {
+  return '#' + [r, g, b].map(x => Math.round(Math.min(255, Math.max(0, x))).toString(16).padStart(2, '0')).join('');
+}
+function interpolateColor(hex1, hex2, t) {
+  const c1 = hexToRgb(hex1), c2 = hexToRgb(hex2);
+  return rgbToHex(c1.r + (c2.r - c1.r) * t, c1.g + (c2.g - c1.g) * t, c1.b + (c2.b - c1.b) * t);
+}
+function lightenColor(hex, amount) {
+  const c = hexToRgb(hex);
+  return rgbToHex(c.r + (255 - c.r) * amount, c.g + (255 - c.g) * amount, c.b + (255 - c.b) * amount);
+}
+
+/**
+ * 将一条路径拆分为多段渐变色 polyline
+ * @param {Array} path - 坐标数组
+ * @param {string} baseColor - 基础颜色 hex
+ * @param {object} mapInstance - 地图实例
+ * @param {string} mapType - 'amap' | 'google' | 'leaflet'
+ * @param {HTMLElement} tr - 表格行
+ * @param {object} record - 记录数据
+ * @returns {Array} overlays 数组
+ */
+function drawGradientPolylines(path, baseColor, mapInstance, mapType, tr, record) {
+  const SEGMENTS = 12;
+  const lightColor = lightenColor(baseColor, 0.7);
+  const overlays = [];
+  const pointsPerSeg = Math.ceil(path.length / SEGMENTS);
+
+  for (let i = 0; i < SEGMENTS; i++) {
+    const start = i * pointsPerSeg;
+    const end = Math.min(start + pointsPerSeg + 1, path.length); // +1 for overlap
+    if (start >= path.length) break;
+    const segPath = path.slice(start, end);
+    if (segPath.length < 2) continue;
+
+    const t = i / (SEGMENTS - 1);
+    const segColor = interpolateColor(lightColor, baseColor, t);
+
+    if (mapType === 'amap') {
+      const poly = new AMap.Polyline({ path: segPath, isOutline: false, strokeColor: segColor, strokeWeight: window.mapLineWidth, strokeOpacity: window.mapLineOpacity, strokeStyle: 'solid', zIndex: 50 });
+      mapInstance.add(poly);
+      overlays.push(poly);
+    } else if (mapType === 'google') {
+      const gPath = segPath.map(p => ({ lat: p[1], lng: p[0] }));
+      const poly = new google.maps.Polyline({ path: gPath, geodesic: false, strokeColor: segColor, strokeOpacity: window.mapLineOpacity, strokeWeight: window.mapLineWidth, zIndex: 50 });
+      poly.setMap(mapInstance);
+      overlays.push(poly);
+    } else if (mapType === 'leaflet') {
+      const lPath = segPath.map(p => [p[1], p[0]]);
+      const poly = L.polyline(lPath, { color: segColor, weight: window.mapLineWidth, opacity: window.mapLineOpacity, smoothFactor: 1 }).addTo(mapInstance);
+      overlays.push(poly);
+    }
+  }
+
+  // 为所有分段绑定联动事件
+  overlays.forEach(poly => {
+    if (mapType === 'amap') {
+      poly.on('mouseover', () => {
+        overlays.forEach(o => o.setOptions && o.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 }));
+        tr.classList.add('highlight-row');
+      });
+      poly.on('mouseout', () => {
+        overlays.forEach(o => o.setOptions && o.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 }));
+        tr.classList.remove('highlight-row');
+      });
+      poly.on('click', () => {
+        tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        tr.classList.add('highlight-row');
+        setTimeout(() => tr.classList.remove('highlight-row'), 3000);
+      });
+      poly.on('rightclick', (e) => { showPolylineContextMenu(e, tr, record); });
+    } else if (mapType === 'google') {
+      google.maps.event.addListener(poly, 'mouseover', () => {
+        overlays.forEach(o => o.setOptions && o.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 }));
+        tr.classList.add('highlight-row');
+      });
+      google.maps.event.addListener(poly, 'mouseout', () => {
+        overlays.forEach(o => o.setOptions && o.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 }));
+        tr.classList.remove('highlight-row');
+      });
+      google.maps.event.addListener(poly, 'click', () => {
+        tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        tr.classList.add('highlight-row');
+        setTimeout(() => tr.classList.remove('highlight-row'), 3000);
+      });
+      google.maps.event.addListener(poly, 'rightclick', (e) => { showPolylineContextMenu(e, tr, record); });
+    } else if (mapType === 'leaflet') {
+      poly.on('mouseover', () => {
+        overlays.forEach(o => o.setStyle && o.setStyle({ weight: window.mapLineWidth + 3 }));
+        if (poly.bringToFront) poly.bringToFront();
+        tr.classList.add('highlight-row');
+      });
+      poly.on('mouseout', () => {
+        overlays.forEach(o => o.setStyle && o.setStyle({ weight: window.mapLineWidth }));
+        tr.classList.remove('highlight-row');
+      });
+      poly.on('click', () => {
+        tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        tr.classList.add('highlight-row');
+        setTimeout(() => tr.classList.remove('highlight-row'), 3000);
+      });
+      poly.on('contextmenu', (e) => { showPolylineContextMenu(e, tr, record); });
+    }
+  });
+
+  return overlays;
+}
+
 async function drawPath(tr, record) {
   if (!record.startStation || !record.endStation) return;
 
@@ -279,116 +393,58 @@ async function drawPath(tr, record) {
         // 存了 GCJ 优先，否则把 WGS 转 GCJ
         let gcjPath = record.pathGCJ;
         if (!Array.isArray(gcjPath) || !gcjPath.length) {
-          // 转换整条路径
           gcjPath = record.pathWGS.map(p => isInChina(p[0], p[1]) ? wgs84ToGcj02(p[0], p[1]) : p);
         }
-        const polyline = new AMap.Polyline({ path: gcjPath, isOutline: false, strokeColor, strokeWeight: window.mapLineWidth, strokeOpacity: window.mapLineOpacity, strokeStyle: 'solid', zIndex: 50 });
-
-        // Interaction Events (AMap)
-        polyline.on('mouseover', () => {
-          polyline.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 });
-          tr.classList.add('highlight-row');
-        });
-        polyline.on('mouseout', () => {
-          polyline.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 });
-          tr.classList.remove('highlight-row');
-        });
-        polyline.on('click', () => {
-          tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          tr.classList.add('highlight-row');
-          setTimeout(() => tr.classList.remove('highlight-row'), 1500);
-        });
-        polyline.on('rightclick', (e) => {
-          showPolylineContextMenu(e, tr, record);
-        });
-
-        amapInstance.add(polyline); overlays.push(polyline);
+        if (window.mapGradientEnabled) {
+          const gradOverlays = drawGradientPolylines(gcjPath, strokeColor, amapInstance, 'amap', tr, record);
+          overlays.push(...gradOverlays);
+        } else {
+          const polyline = new AMap.Polyline({ path: gcjPath, isOutline: false, strokeColor, strokeWeight: window.mapLineWidth, strokeOpacity: window.mapLineOpacity, strokeStyle: 'solid', zIndex: 50 });
+          polyline.on('mouseover', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 }); tr.classList.add('highlight-row'); });
+          polyline.on('mouseout', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 }); tr.classList.remove('highlight-row'); });
+          polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 3000); });
+          polyline.on('rightclick', (e) => { showPolylineContextMenu(e, tr, record); });
+          amapInstance.add(polyline); overlays.push(polyline);
+        }
         if (gcjPath.length) {
           const mid = gcjPath[Math.floor(gcjPath.length / 2)];
           const label = new AMap.Text({ text: year, position: mid, style: { 'font-size': '12px', 'font-weight': 'bold', 'color': strokeColor, 'background-color': 'rgba(255,255,255,0.8)', 'border': '1px solid ' + strokeColor, 'border-radius': '3px', 'padding': '2px 4px', 'text-align': 'center' }, offset: [0, -10], zIndex: 50 });
           amapInstance.add(label); overlays.push(label);
-
-
         }
       } else if (currentMapType === 'google') {
-        const googlePath = record.pathWGS.map(p => ({ lat: p[1], lng: p[0] }));
-        const polyline = new google.maps.Polyline({
-          path: googlePath,
-          geodesic: false,
-          strokeColor: getYearColor(year),
-          strokeOpacity: window.mapLineOpacity,
-          strokeWeight: window.mapLineWidth,
-          icons: [{
-            icon: {
-              path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-              fillColor: getYearColor(year),
-              fillOpacity: window.mapLineOpacity,
-              strokeWeight: 0,
-              scale: window.mapLineWidth > 2 ? 3 : 2
-            },
-            offset: '50%'
-          }],
-          zIndex: 50
-        });
-
-        // Interaction Events (Google Maps)
-        google.maps.event.addListener(polyline, 'mouseover', () => {
-          polyline.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 });
-          tr.classList.add('highlight-row');
-        });
-        google.maps.event.addListener(polyline, 'mouseout', () => {
-          polyline.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 });
-          tr.classList.remove('highlight-row');
-        });
-        google.maps.event.addListener(polyline, 'click', () => {
-          tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          tr.classList.add('highlight-row');
-          setTimeout(() => tr.classList.remove('highlight-row'), 1500);
-        });
-        google.maps.event.addListener(polyline, 'rightclick', (e) => {
-          showPolylineContextMenu(e, tr, record);
-        });
-
-        polyline.setMap(googleMap); overlays.push(polyline);
-      } else if (currentMapType === 'leaflet') {
-        // 使用 Leaflet 绘制已存路径
-        const latLngs = record.pathWGS.map(p => [p[1], p[0]]); // Leaflet uses [lat, lon]
-        const polyline = L.polyline(latLngs, {
-          color: strokeColor,
-          weight: window.mapLineWidth,
-          opacity: window.mapLineOpacity,
-          smoothFactor: 1
-        }).addTo(leafletMap);
-
-        if (record.pathWGS.length) {
-          const midInfo = record.pathWGS[Math.floor(record.pathWGS.length / 2)];
-          const ptLat = midInfo[1], ptLng = midInfo[0];
-          const heading = getPathMidHeading(record.pathWGS);
-          const arrowMarker = L.marker([ptLat, ptLng], {
-            icon: L.divIcon({ html: getArrowHtml(heading, strokeColor), className: 'custom-arrow-icon', iconSize: [14, 14], iconAnchor: [7, 7] }),
-            interactive: false
-          }).addTo(leafletMap);
-          overlays.push(arrowMarker);
+        if (window.mapGradientEnabled) {
+          const gradOverlays = drawGradientPolylines(record.pathWGS, strokeColor, googleMap, 'google', tr, record);
+          overlays.push(...gradOverlays);
+        } else {
+          const googlePath = record.pathWGS.map(p => ({ lat: p[1], lng: p[0] }));
+          const gOpts = { path: googlePath, geodesic: false, strokeColor: getYearColor(year), strokeOpacity: window.mapLineOpacity, strokeWeight: window.mapLineWidth, zIndex: 50 };
+          if (window.mapArrowEnabled) { gOpts.icons = [{ icon: { path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW, fillColor: getYearColor(year), fillOpacity: window.mapLineOpacity, strokeWeight: 0, scale: window.mapLineWidth > 2 ? 3 : 2 }, offset: '50%' }]; }
+          const polyline = new google.maps.Polyline(gOpts);
+          google.maps.event.addListener(polyline, 'mouseover', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth + 3, zIndex: 100 }); tr.classList.add('highlight-row'); });
+          google.maps.event.addListener(polyline, 'mouseout', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth, zIndex: 50 }); tr.classList.remove('highlight-row'); });
+          google.maps.event.addListener(polyline, 'click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 3000); });
+          google.maps.event.addListener(polyline, 'rightclick', (e) => { showPolylineContextMenu(e, tr, record); });
+          polyline.setMap(googleMap); overlays.push(polyline);
         }
-
-        polyline.on('mouseover', () => {
-          polyline.setStyle({ weight: window.mapLineWidth + 3 });
-          polyline.bringToFront();
-          tr.classList.add('highlight-row');
-        });
-        polyline.on('mouseout', () => {
-          polyline.setStyle({ weight: window.mapLineWidth });
-          tr.classList.remove('highlight-row');
-        });
-        polyline.on('click', () => {
-          tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          tr.classList.add('highlight-row');
-          setTimeout(() => tr.classList.remove('highlight-row'), 1500);
-        });
-        polyline.on('contextmenu', (e) => {
-          showPolylineContextMenu(e, tr, record);
-        });
-        overlays.push(polyline);
+      } else if (currentMapType === 'leaflet') {
+        if (window.mapGradientEnabled) {
+          const gradOverlays = drawGradientPolylines(record.pathWGS, strokeColor, leafletMap, 'leaflet', tr, record);
+          overlays.push(...gradOverlays);
+        } else {
+          const latLngs = record.pathWGS.map(p => [p[1], p[0]]);
+          const polyline = L.polyline(latLngs, { color: strokeColor, weight: window.mapLineWidth, opacity: window.mapLineOpacity, smoothFactor: 1 }).addTo(leafletMap);
+          if (window.mapArrowEnabled && record.pathWGS.length) {
+            const midInfo = record.pathWGS[Math.floor(record.pathWGS.length / 2)];
+            const heading = getPathMidHeading(record.pathWGS);
+            const arrowMarker = L.marker([midInfo[1], midInfo[0]], { icon: L.divIcon({ html: getArrowHtml(heading, strokeColor), className: 'custom-arrow-icon', iconSize: [14, 14], iconAnchor: [7, 7] }), interactive: false }).addTo(leafletMap);
+            overlays.push(arrowMarker);
+          }
+          polyline.on('mouseover', () => { polyline.setStyle({ weight: window.mapLineWidth + 3 }); polyline.bringToFront(); tr.classList.add('highlight-row'); });
+          polyline.on('mouseout', () => { polyline.setStyle({ weight: window.mapLineWidth }); tr.classList.remove('highlight-row'); });
+          polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 3000); });
+          polyline.on('contextmenu', (e) => { showPolylineContextMenu(e, tr, record); });
+          overlays.push(polyline);
+        }
       }
       tr._overlays = overlays;
       const shouldShow = isUserDeselectedAll ? false : (selectedYears.size === 0 || selectedYears.has(year));
@@ -439,77 +495,56 @@ async function drawPath(tr, record) {
     if (currentMapType === 'amap') {
       const gcjPath = wgsPath.map(p => isInChina(p[0], p[1]) ? wgs84ToGcj02(p[0], p[1]) : p);
       record.pathGCJ = gcjPath.map(p => [p[0], p[1]]);
-      const polyline = new AMap.Polyline({ path: gcjPath, isOutline: false, strokeColor, strokeWeight: window.mapLineWidth, strokeOpacity: window.mapLineOpacity, strokeStyle: 'solid' });
-      polyline.on('mouseover', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth + 3 }); tr.classList.add('highlight-row'); });
-      polyline.on('mouseout', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth }); tr.classList.remove('highlight-row'); });
-      polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 1500); });
-      polyline.on('rightclick', (e) => {
-        showPolylineContextMenu(e, tr, record);
-      });
-
-      amapInstance.add(polyline); overlays.push(polyline);
+      if (window.mapGradientEnabled) {
+        const gradOverlays = drawGradientPolylines(gcjPath, strokeColor, amapInstance, 'amap', tr, record);
+        overlays.push(...gradOverlays);
+      } else {
+        const polyline = new AMap.Polyline({ path: gcjPath, isOutline: false, strokeColor, strokeWeight: window.mapLineWidth, strokeOpacity: window.mapLineOpacity, strokeStyle: 'solid' });
+        polyline.on('mouseover', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth + 3 }); tr.classList.add('highlight-row'); });
+        polyline.on('mouseout', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth }); tr.classList.remove('highlight-row'); });
+        polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 3000); });
+        polyline.on('rightclick', (e) => { showPolylineContextMenu(e, tr, record); });
+        amapInstance.add(polyline); overlays.push(polyline);
+      }
       if (gcjPath.length) {
         const mid = gcjPath[Math.floor(gcjPath.length / 2)];
         const label = new AMap.Text({ text: year, position: mid, style: { 'font-size': '12px', 'font-weight': 'bold', 'color': strokeColor, 'background-color': 'rgba(255,255,255,0.8)', 'border': '1px solid ' + strokeColor, 'border-radius': '3px', 'padding': '2px 4px', 'text-align': 'center' }, offset: [0, -10] });
         amapInstance.add(label); overlays.push(label);
-
-
       }
     } else if (currentMapType === 'google') {
-      const googlePath = wgsPath.map(p => ({ lat: p[1], lng: p[0] }));
-      const polyline = new google.maps.Polyline({
-        path: googlePath,
-        geodesic: false,
-        strokeColor,
-        strokeOpacity: window.mapLineOpacity,
-        strokeWeight: window.mapLineWidth,
-        icons: [{
-          icon: {
-            path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-            fillColor: strokeColor,
-            fillOpacity: window.mapLineOpacity,
-            strokeWeight: 0,
-            scale: window.mapLineWidth > 2 ? 3 : 2
-          },
-          offset: '50%'
-        }]
-      });
-      google.maps.event.addListener(polyline, 'mouseover', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth + 3 }); tr.classList.add('highlight-row'); });
-      google.maps.event.addListener(polyline, 'mouseout', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth }); tr.classList.remove('highlight-row'); });
-      google.maps.event.addListener(polyline, 'click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 1500); });
-      google.maps.event.addListener(polyline, 'rightclick', (e) => {
-        showPolylineContextMenu(e, tr, record);
-      });
-      polyline.setMap(googleMap); overlays.push(polyline);
-    } else if (currentMapType === 'leaflet') {
-      // Leaflet 绘制新路径
-      const latLngs = wgsPath.map(p => [p[1], p[0]]);
-      const polyline = L.polyline(latLngs, {
-        color: strokeColor,
-        weight: window.mapLineWidth,
-        opacity: window.mapLineOpacity,
-        smoothFactor: 1
-      }).addTo(leafletMap);
-
-      if (wgsPath.length) {
-        const midInfo = wgsPath[Math.floor(wgsPath.length / 2)];
-        const heading = getPathMidHeading(wgsPath);
-        const arrowMarker = L.marker([midInfo[1], midInfo[0]], {
-          icon: L.divIcon({ html: getArrowHtml(heading, strokeColor), className: 'custom-arrow-icon', iconSize: [14, 14], iconAnchor: [7, 7] }),
-          interactive: false
-        }).addTo(leafletMap);
-        overlays.push(arrowMarker);
+      if (window.mapGradientEnabled) {
+        const gradOverlays = drawGradientPolylines(wgsPath, strokeColor, googleMap, 'google', tr, record);
+        overlays.push(...gradOverlays);
+      } else {
+        const googlePath = wgsPath.map(p => ({ lat: p[1], lng: p[0] }));
+        const gOpts2 = { path: googlePath, geodesic: false, strokeColor, strokeOpacity: window.mapLineOpacity, strokeWeight: window.mapLineWidth };
+        if (window.mapArrowEnabled) { gOpts2.icons = [{ icon: { path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW, fillColor: strokeColor, fillOpacity: window.mapLineOpacity, strokeWeight: 0, scale: window.mapLineWidth > 2 ? 3 : 2 }, offset: '50%' }]; }
+        const polyline = new google.maps.Polyline(gOpts2);
+        google.maps.event.addListener(polyline, 'mouseover', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth + 3 }); tr.classList.add('highlight-row'); });
+        google.maps.event.addListener(polyline, 'mouseout', () => { polyline.setOptions({ strokeWeight: window.mapLineWidth }); tr.classList.remove('highlight-row'); });
+        google.maps.event.addListener(polyline, 'click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 3000); });
+        google.maps.event.addListener(polyline, 'rightclick', (e) => { showPolylineContextMenu(e, tr, record); });
+        polyline.setMap(googleMap); overlays.push(polyline);
       }
-
-      // Bind Interactions
-      polyline.on('mouseover', () => { polyline.setStyle({ weight: window.mapLineWidth + 3 }); polyline.bringToFront(); tr.classList.add('highlight-row'); });
-      polyline.on('mouseout', () => { polyline.setStyle({ weight: window.mapLineWidth }); tr.classList.remove('highlight-row'); });
-      polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 1500); });
-      polyline.on('contextmenu', (e) => {
-        showPolylineContextMenu(e, tr, record);
-      });
-
-      overlays.push(polyline);
+    } else if (currentMapType === 'leaflet') {
+      if (window.mapGradientEnabled) {
+        const gradOverlays = drawGradientPolylines(wgsPath, strokeColor, leafletMap, 'leaflet', tr, record);
+        overlays.push(...gradOverlays);
+      } else {
+        const latLngs = wgsPath.map(p => [p[1], p[0]]);
+        const polyline = L.polyline(latLngs, { color: strokeColor, weight: window.mapLineWidth, opacity: window.mapLineOpacity, smoothFactor: 1 }).addTo(leafletMap);
+        if (window.mapArrowEnabled && wgsPath.length) {
+          const midInfo = wgsPath[Math.floor(wgsPath.length / 2)];
+          const heading = getPathMidHeading(wgsPath);
+          const arrowMarker = L.marker([midInfo[1], midInfo[0]], { icon: L.divIcon({ html: getArrowHtml(heading, strokeColor), className: 'custom-arrow-icon', iconSize: [14, 14], iconAnchor: [7, 7] }), interactive: false }).addTo(leafletMap);
+          overlays.push(arrowMarker);
+        }
+        polyline.on('mouseover', () => { polyline.setStyle({ weight: window.mapLineWidth + 3 }); polyline.bringToFront(); tr.classList.add('highlight-row'); });
+        polyline.on('mouseout', () => { polyline.setStyle({ weight: window.mapLineWidth }); tr.classList.remove('highlight-row'); });
+        polyline.on('click', () => { tr.scrollIntoView({ behavior: 'smooth', block: 'center' }); tr.classList.add('highlight-row'); setTimeout(() => tr.classList.remove('highlight-row'), 3000); });
+        polyline.on('contextmenu', (e) => { showPolylineContextMenu(e, tr, record); });
+        overlays.push(polyline);
+      }
     }
     tr._overlays = overlays;
     const shouldShow = isUserDeselectedAll ? false : (selectedYears.size === 0 || selectedYears.has(year));

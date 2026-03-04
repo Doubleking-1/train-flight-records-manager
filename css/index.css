@@ -5,6 +5,8 @@
       --text: #222;
       --accent: #0d6efd;
       --modal-bg: #ffffff;
+      --panel-bg-translucent: rgba(255, 255, 255, 0.4);
+      --panel-text: #222;
     }
 
     .dark {
@@ -14,6 +16,8 @@
       --text: #e0e0e0;
       --accent: #66aaff;
       --modal-bg: #1e1e1e;
+      --panel-bg-translucent: rgba(0, 0, 0, 0.4);
+      --panel-text: #fff;
     }
 
     /* ... existing styles ... */

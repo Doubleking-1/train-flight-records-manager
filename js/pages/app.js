@@ -21,6 +21,8 @@ let selectedYears = new Set(); // 选中的年份集合
 let isUserDeselectedAll = false; // 用户是否主动执行了"全不选"
 window.mapLineWidth = 2; // 全局地图线宽控制
 window.mapLineOpacity = 0.9; // 全局地图线条透明度控制
+window.mapGradientEnabled = false; // 渐变色线条开关
+window.mapArrowEnabled = true; // 方向箭头开关
 
 // === 线路编辑模式 ===
 window.currentPolylineEditor = null; // 当前编辑器实例
@@ -602,6 +604,10 @@ function switchMapType(targetType) {
   // 保存地图类型到localStorage
   localStorage.setItem('currentMapType', currentMapType);
   console.log(`地图类型已保存: ${currentMapType}`);
+
+  // 高德地图无箭头功能，隐藏箭头开关
+  const arrowLabel = document.getElementById('arrowToggle');
+  if (arrowLabel) arrowLabel.parentElement.style.display = currentMapType === 'amap' ? 'none' : 'flex';
 
   // 重新绘制所有路径
   console.log('准备重新绘制路径...');
@@ -1378,6 +1384,10 @@ function updateRegionStats(filterYear = null) {
 window.toggleYearVisibility = function (year) {
   if (selectedYears.has(year)) {
     selectedYears.delete(year);
+    // 如果删除后没有选中的年份了，记为用户主动全不选
+    if (selectedYears.size === 0) {
+      isUserDeselectedAll = true;
+    }
   } else {
     selectedYears.add(year);
     isUserDeselectedAll = false; // 如果用户选择了某个年份，重置全不选标志
@@ -1452,6 +1462,35 @@ function updatePathVisibility() {
 // ===================== 图表渲染 =====================
 // createYearlyCharts, createBureauChart, createTypeChart,
 // updateChartsTheme, updateSummaryPanels 已迁移到 js/modules/charts.js
+
+// 新增：安全初始化统计和图表（处理模块加载延迟）
+function safeInitStatsAndCharts(retryCount = 0) {
+  const maxRetries = 10;
+  const retryInterval = 200;
+
+  // 检查关键依赖是否已就绪
+  const dependenciesReady =
+    typeof updateSummaryPanels === 'function' &&
+    typeof createYearlyCharts === 'function' &&
+    typeof updateStats === 'function' &&
+    typeof Chart !== 'undefined';
+
+  if (dependenciesReady) {
+    console.log(`[Init] 统计模块已就绪 (尝试第 ${retryCount} 次)`);
+    try {
+      updateYearLegend();
+      updateSummaryPanels();
+      updateStats();
+    } catch (e) {
+      console.error('[Init] 渲染统计面板失败:', e);
+    }
+  } else if (retryCount < maxRetries) {
+    console.warn(`[Init] 统计模块未就绪，${retryInterval}ms 后重试... (${retryCount + 1}/${maxRetries})`);
+    setTimeout(() => safeInitStatsAndCharts(retryCount + 1), retryInterval);
+  } else {
+    console.error('[Init] 统计模块加载超时，部分图表可能无法显示');
+  }
+}
 
 // Save geocode results to localStorage
 function saveGeocodeCache() {
@@ -1781,6 +1820,7 @@ function reloadForEntity(entity) {
   loadCustomAddresses();
 
   // 渲染表格行（不立即绘制路径，避免地图状态未就绪）
+  tbody.innerHTML = '';
   records.forEach(rec => {
     const tr = document.createElement('tr');
     const rpk = rec.distance > 0 ? (rec.cost / rec.distance).toFixed(4) : '';
@@ -1839,8 +1879,8 @@ function reloadForEntity(entity) {
     }
   });
   updateSequenceNumbers();
-  updateSummaryPanels();
   updateYearLegend();
+  updateSummaryPanels();
   // 同步刷新出行统计，保证火车/飞机模式下相互独立
   updateStats();
   // 稍后恢复绘制路径：不强制清空路径缓存，直接按已有 pathWGS 恢复
@@ -1870,6 +1910,8 @@ mapSelect.addEventListener('change', (e) => {
 
 // Set initial selection
 if (mapSelect) mapSelect.value = currentMapType;
+// 初始化时，高德隐藏箭头开关
+(function () { const at = document.getElementById('arrowToggle'); if (at) at.parentElement.style.display = currentMapType === 'amap' ? 'none' : 'flex'; })();
 
 // 已移除地点标记按钮与监听器
 
@@ -2553,11 +2595,8 @@ function initialLoad() {
     sortRecords('datetime');
 
     // updateSequenceNumbers 会在 rerenderTable 中调用，不需要重复
-    // 初始化总结面板和图表
-    updateSummaryPanels();
-    createYearlyCharts();
-    updateYearLegend();
-    updateStats();
+    // 初始化总结面板和图表 - 改为安全初始化
+    safeInitStatsAndCharts();
 
     // 地图完全加载后绘制所有路径
     const handleMapLoad = async function () {
@@ -2791,6 +2830,25 @@ document.addEventListener('DOMContentLoaded', () => {
           });
         }
       });
+    });
+  }
+
+  // 渐变色开关事件
+  const gradientToggle = document.getElementById('gradientToggle');
+  if (gradientToggle) {
+    gradientToggle.addEventListener('change', (e) => {
+      window.mapGradientEnabled = e.target.checked;
+      // 切换渐变需要重绘所有线路
+      redrawAllPaths();
+    });
+  }
+
+  // 方向箭头开关事件
+  const arrowToggle = document.getElementById('arrowToggle');
+  if (arrowToggle) {
+    arrowToggle.addEventListener('change', (e) => {
+      window.mapArrowEnabled = e.target.checked;
+      redrawAllPaths();
     });
   }
 

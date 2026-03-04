@@ -67,15 +67,29 @@ console.log('[Replay Module] performSmoothZoomTransition 已加载');
 function animatePolyline(polyline, fullPath, onComplete) {
   let pointIndex = 0;
   const totalPoints = fullPath.length;
-  // Dynamic speed: ensure at least 30 frames (0.5s) unless very short, max 120 frames (2s)
-  // Calculate points per frame
-  // Base 180 (3s), adjusted by slider.
-  // Higher slider = faster = more points per frame.
-  // Multiplier: slider / 30.
-  let speedVal = 30;
+  // 用户诉求：线短的播快点（完成时间短），线长的播慢点（完成时间长）
+  // 之前的逻辑是：所有线都固定在大约 180 帧 (3秒) 播完，导致距离越长，看着速度越“快”。
+  // 现在的逻辑：根据路线总长度设定一个基准的“每帧点数”，路线越长花费的时间自然就越长。
+  // 基准值：假设正常情况下每次画 1 个点（极短线），如果点数非常多（如 3000 点），为了不至于播几分钟，适当增加每帧点数。
+  let speedVal = 30; // 默认值
   if (replaySpeedInput) speedVal = parseInt(replaySpeedInput.value, 10) || 30;
+
+  // speedVal 范围 10~100，30 为正常速度 (1.0x)
+  // 如果是正常速度(30)，我们设定长度为 1000 个点的路线，每帧画 5 个点（约需 200 帧 = 3.3秒）。
+  // 也就是说基准速率约为：总点数 / 200，但不低于 1。
+  let basePointsPerFrame = Math.max(1, Math.ceil(totalPoints / 200));
+
+  // 结合速度滑块调节：
+  // 如果滑块在最大(100)，速度大概是正常(30)的 3.3 倍。
   const multiplier = speedVal / 30;
-  const pointsPerFrame = Math.max(1, Math.ceil((totalPoints / 180) * multiplier));
+
+  // 短线保障：如果是极短的线（比如只有几十个点），基准算出来是1。
+  // 为了让短线“播快点”，我们强制增加一些基础点数
+  if (totalPoints < 100) {
+    basePointsPerFrame = 2; // 短线最低每帧 2 个点，会比较快播完
+  }
+
+  const pointsPerFrame = Math.max(1, Math.ceil(basePointsPerFrame * multiplier));
 
   function step() {
     if (replayPaused) {
@@ -95,27 +109,34 @@ function animatePolyline(polyline, fullPath, onComplete) {
 
     if (pointsToAdd.length > 0) {
       if (currentMapType === 'amap') {
-        const currentPath = polyline.getPath(); // Returns Array
-        // AMap path is simple array of LngLat or arrays
+        // Optimization: Use AMap's internal path array if accessible, or update less frequently
+        // To avoid O(N^2) copying, we can just push to a local array and set it
+        // However, setting the whole array is still O(N).
+        // Best approach for AMap 2.0: re-assigning is fast enough for <10000 points, 
+        // but we can chunk the polyline if it gets too long.
+        // For now, let's keep it simple but ensure we only call setPath ONCE per batch.
+        const currentPath = polyline.getPath();
         pointsToAdd.forEach(p => currentPath.push(p));
         polyline.setPath(currentPath);
       } else if (currentMapType === 'google') {
-        // Optimization: Get raw array, modify, set back (updates once)
-        // Or just push to MVCArray if small batch? pushing 30-100 times is bad.
-        // Let's replace the path.
+        // Optimization: Google Maps MVCArray.push is O(1)
         const pathMVC = polyline.getPath();
         pointsToAdd.forEach(p => pathMVC.push(p));
       } else if (currentMapType === 'leaflet') {
-        const currentPath = polyline.getLatLngs(); // Returns Array
-        pointsToAdd.forEach(p => currentPath.push(p));
-        polyline.setLatLngs(currentPath);
+        // Optimization: Leaflet's addLatLng is O(1) and much faster than setLatLngs(entireArray)
+        pointsToAdd.forEach(p => polyline.addLatLng(p));
       }
     }
 
+    // --- Performance Optimization: Throttle Panning ---
+    // Throttle panTo requests to max once every 300ms to avoid jitter and frame drops
+    const now = performance.now();
+    if (!polyline._lastPanTime) polyline._lastPanTime = 0;
+    const canPan = (now - polyline._lastPanTime) > 300;
 
     // Map Center Follow: Move map center to the head of the drawing line (Smart Follow / Deadzone)
     const followCheckbox = document.getElementById('replayMapFollowCheckbox');
-    if (pointIndex > 0 && followCheckbox && followCheckbox.checked) {
+    if (pointIndex > 0 && followCheckbox && followCheckbox.checked && canPan) {
       const lastP = fullPath[Math.min(pointIndex - 1, totalPoints - 1)];
       try {
         let shouldPan = false;
@@ -162,6 +183,10 @@ function animatePolyline(polyline, fullPath, onComplete) {
           }
         }
 
+        if (shouldPan) {
+          polyline._lastPanTime = now;
+        }
+
         // No "else": If inside deadzone, do nothing (keep map static)
       } catch (e) {
         // Ignore errors during fast switching or map disposal
@@ -169,7 +194,10 @@ function animatePolyline(polyline, fullPath, onComplete) {
       }
     }
 
-    // Update marker position
+    // --- Performance Optimization: Throttle Marker Updates ---
+    // Update marker position slightly less frequently if moving very fast, 
+    // or batch it, but updating every frame is usually okay for just one marker.
+    // We'll keep it per-frame for smoothness, but only if the point actually changed.
     if (replayCurrentMarker && pointIndex > 0) {
       const lastP = fullPath[Math.min(pointIndex - 1, totalPoints - 1)];
       try {
