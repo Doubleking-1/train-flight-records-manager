@@ -340,4 +340,85 @@ function insertInlineAfter(tr) {
     updateSequenceNumbers();
   });
 }
+
+function insertInlineAtTop() {
+  const newTr = document.createElement('tr');
+  const cfg = getEntityConfig();
+  newTr.innerHTML = `
+        <td></td>
+        <td><input class=\"inline-input\" type=\"date\" placeholder=\"日期\" title=\"日期\"></td>
+        <td><input class=\"inline-input\" type=\"time\" placeholder=\"时间\" title=\"时间\"></td>
+        <td>${buildDurationSelects('00:00')}</td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainNo}\" title=\"${cfg.labels.trainNo}\"></td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startStation}\" title=\"${cfg.labels.startStation}\"></td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startCity}\" title=\"${cfg.labels.startCity}\"></td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endStation}\" title=\"${cfg.labels.endStation}\"></td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endCity}\" title=\"${cfg.labels.endCity}\"></td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.seatClass}\" title=\"${cfg.labels.seatClass}\"></td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainType}\" title=\"${cfg.labels.trainType}\"></td>
+        <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.bureau}\" title=\"${cfg.labels.bureau}\"></td>
+        <td><input class=\"inline-input\" type=\"number\" step=\"0.01\" placeholder=\"费用 (RMB)\" title=\"费用 (RMB)\" value=\"0\"></td>
+        <td><input class="inline-input" type="number" step="1" placeholder="里程 (km)" title="里程 (km)" value="0"></td>
+        <td></td><!-- RMB/km -->
+        <td></td><!-- Speed -->
+        <td><input class="inline-input" type="text" placeholder="备注" title="备注"></td>
+        <td>
+          <button class="save">保存</button>
+          <button class="cancel">取消</button>
+        </td>
+      `;
+  
+  if (tbody.firstChild) {
+    tbody.insertBefore(newTr, tbody.firstChild);
+  } else {
+    tbody.appendChild(newTr);
+  }
+  newTr._isNewRow = true;
+  updateSequenceNumbers();
+
+  const c = newTr.cells;
+  const updateRowCalculations = () => {
+    const cost = parseFloat(c[COL.cost].querySelector('input').value) || 0;
+    const dist = parseFloat(c[COL.distance].querySelector('input').value) || 0;
+    c[COL.rmbPerKm].textContent = dist > 0 ? (cost / dist).toFixed(4) : '';
+
+    const durationMins = readDurationFromRowCell(c[COL.duration]);
+    const mins = parseDurationToMinutes(durationMins);
+    if (dist > 0 && mins > 0) {
+      c[COL.speed].textContent = (dist / (mins / 60)).toFixed(1);
+    } else {
+      c[COL.speed].textContent = '';
+    }
+  };
+  c[COL.cost].querySelector('input').addEventListener('input', updateRowCalculations);
+  c[COL.distance].querySelector('input').addEventListener('input', updateRowCalculations);
+  const durationCell = c[COL.duration];
+  durationCell.querySelectorAll('input').forEach(inp => inp.addEventListener('input', updateRowCalculations));
+
+  c[COL.actions].querySelector('.save').addEventListener('click', () => {
+    const rec = collectRowData(newTr);
+    if (!rec.startStation || !rec.endStation) {
+      const cfg = getEntityConfig();
+      alert(`${cfg.labels.startStation} 和 ${cfg.labels.endStation} 不能为空！`);
+      return;
+    }
+    renderRowFromData(newTr, rec);
+    updateSequenceNumbers();
+    
+    const idx = Array.from(tbody.children).indexOf(newTr);
+    if (idx !== -1) {
+      records.splice(idx, 0, { ...rec });
+      saveRecords();
+    }
+    
+    try { drawPath(newTr, records[idx]); } catch (e) { console.warn('绘制新增线路失败', e); }
+    try { updateYearLegend && updateYearLegend(); } catch { }
+    try { updateStats && updateStats(); } catch { }
+  });
+
+  c[COL.actions].querySelector('.cancel').addEventListener('click', () => {
+    newTr.remove();
+    updateSequenceNumbers();
+  });
+}
 console.log('[Table Editor Module] ✅ 加载完成');

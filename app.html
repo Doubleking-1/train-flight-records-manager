@@ -689,10 +689,30 @@
       </div>
     </div>
 
+    <div style="margin: 0 0 8px 0; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+      <button id="addRowBtn"
+        style="padding:6px 10px;font-size:12px;border:1px solid var(--border-color);background:var(--btn-bg);color:var(--text-color);border-radius:4px;cursor:pointer;flex-shrink:0;">➕
+        新增一行</button>
+      
+      <div style="display: flex; gap: 8px; align-items: center; font-size: 12px; flex-wrap: wrap;">
+        <span style="color:var(--text-color); font-weight:600;">筛选:</span>
+        <input type="text" id="filterYear2" placeholder="年份" style="padding:4px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px; width:60px;">
+        <input type="text" id="filterTrainNo" placeholder="车次/航班" style="padding:4px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px; width:70px;">
+        <input type="text" id="filterTrainType" placeholder="车型号/航司" style="padding:4px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px; width:80px;">
+        <input type="text" id="filterStartStation" placeholder="起点站" style="padding:4px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px; width:80px;">
+        <input type="text" id="filterStartCity" placeholder="起点城市" style="padding:4px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px; width:80px;">
+        <input type="text" id="filterEndStation" placeholder="终点站" style="padding:4px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px; width:80px;">
+        <input type="text" id="filterEndCity" placeholder="终点城市" style="padding:4px 6px; font-size:11px; border:1px solid var(--border-color); background:var(--input-bg); color:var(--text-color); border-radius:4px; width:80px;">
+        <button id="clearTableFilterBtn" style="padding:4px 8px; font-size:11px; background:var(--btn-bg); color:var(--text-color); border:1px solid var(--border-color); border-radius:4px; cursor:pointer;">清空</button>
+        <button id="toggleSelectionBtn" style="padding:4px 8px; font-size:11px; background:var(--primary-color, #0d6efd); color:#fff; border:none; border-radius:4px; cursor:pointer; margin-left:10px;">多选统计</button>
+      </div>
+    </div>
+    <div id="selectionStats" style="display: none; margin-bottom: 8px; padding: 6px 10px; background: rgba(13, 110, 253, 0.1); border-left: 3px solid #0d6efd; border-radius: 4px; font-size: 12px; color: var(--text-color);">
+    </div>
     <table id="historyTable">
       <thead>
         <tr>
-          <th class="sortable" data-field="datetime">#</th>
+          <th class="sortable" data-field="datetime"><input type="checkbox" id="selectAllRowsCb" style="margin-right:4px;">#</th>
           <th class="sortable" data-field="date">日期</th>
           <th class="sortable" data-field="time">时间</th>
           <th class="sortable" data-field="duration">时长</th>
@@ -714,11 +734,6 @@
       </thead>
       <tbody></tbody>
     </table>
-    <div style="margin: 8px 0 0;">
-      <button id="addRowBtn"
-        style="padding:6px 10px;font-size:12px;border:1px solid var(--border-color);background:var(--btn-bg);color:var(--text-color);border-radius:4px;cursor:pointer;">➕
-        新增一行</button>
-    </div>
   </div>
 
 

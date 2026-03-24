@@ -1523,3 +1523,8 @@ td.highlight-cell {
   background: rgba(13, 110, 253, 0.1);
   color: var(--primary-color);
 }
+/* Selection Mode Checkboxes */
+#historyTable:not(.show-checkboxes) .row-checkbox,
+#historyTable:not(.show-checkboxes) #selectAllRowsCb {
+  display: none !important;
+}

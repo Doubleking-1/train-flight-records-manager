@@ -215,6 +215,16 @@ const labelBureau = document.getElementById('label-bureau');
 const routeList = document.getElementById('routeList');
 const cityList = document.getElementById('cityList');
 
+// 表格筛选元素
+const filterYear2 = document.getElementById('filterYear2');
+const filterTrainNo = document.getElementById('filterTrainNo');
+const filterTrainType = document.getElementById('filterTrainType');
+const filterStartStation = document.getElementById('filterStartStation');
+const filterStartCity = document.getElementById('filterStartCity');
+const filterEndStation = document.getElementById('filterEndStation');
+const filterEndCity = document.getElementById('filterEndCity');
+const clearTableFilterBtn = document.getElementById('clearTableFilterBtn');
+
 // 新增导入导出元素
 const importExcelBtn = document.getElementById('importExcelBtn');
 const importExcelFile = document.getElementById('importExcelFile');
@@ -811,9 +821,39 @@ function rerenderTable(filterYear = null) {
   tbody.innerHTML = '';
 
   // Filter records if year is provided
-  const displayRecords = filterYear
+  let displayRecords = filterYear
     ? records.filter(r => r.date && r.date.substring(0, 4) === filterYear)
     : records;
+
+  // Apply text filters
+  if (typeof filterYear2 !== 'undefined' && filterYear2 && filterYear2.value.trim()) {
+    const term = filterYear2.value.trim();
+    displayRecords = displayRecords.filter(r => r.date && r.date.includes(term));
+  }
+  if (typeof filterTrainNo !== 'undefined' && filterTrainNo && filterTrainNo.value.trim()) {
+    const term = filterTrainNo.value.trim().toLowerCase();
+    displayRecords = displayRecords.filter(r => (r.trainNo || '').toLowerCase().includes(term));
+  }
+  if (typeof filterTrainType !== 'undefined' && filterTrainType && filterTrainType.value.trim()) {
+    const term = filterTrainType.value.trim().toLowerCase();
+    displayRecords = displayRecords.filter(r => (r.trainType || '').toLowerCase().includes(term));
+  }
+  if (typeof filterStartStation !== 'undefined' && filterStartStation && filterStartStation.value.trim()) {
+    const term = filterStartStation.value.trim().toLowerCase();
+    displayRecords = displayRecords.filter(r => (r.startStation || '').toLowerCase().includes(term));
+  }
+  if (typeof filterStartCity !== 'undefined' && filterStartCity && filterStartCity.value.trim()) {
+    const term = filterStartCity.value.trim().toLowerCase();
+    displayRecords = displayRecords.filter(r => (r.startCity || '').toLowerCase().includes(term));
+  }
+  if (typeof filterEndStation !== 'undefined' && filterEndStation && filterEndStation.value.trim()) {
+    const term = filterEndStation.value.trim().toLowerCase();
+    displayRecords = displayRecords.filter(r => (r.endStation || '').toLowerCase().includes(term));
+  }
+  if (typeof filterEndCity !== 'undefined' && filterEndCity && filterEndCity.value.trim()) {
+    const term = filterEndCity.value.trim().toLowerCase();
+    displayRecords = displayRecords.filter(r => (r.endCity || '').toLowerCase().includes(term));
+  }
 
   // Render filtered records
   displayRecords.forEach(rec => {
@@ -881,8 +921,11 @@ function rerenderTable(filterYear = null) {
     tr._record = rec;
   });
 
-  // Update sequence numbers
+  // Update sequence numbers (which also attaches checkboxes)
   updateSequenceNumbers();
+
+  // Reset selection stats display when rendering completes
+  if (typeof updateSelectionStats === 'function') updateSelectionStats();
 
   // Update stats and map (don't trigger full update to avoid recursion)
   updateYearLegend();
@@ -1515,11 +1558,72 @@ function loadGeocodeCache() {
   }
 }
 
-// Update sequence numbers in the table
+// Update sequence numbers and row checkboxes in the table
 function updateSequenceNumbers() {
   Array.from(tbody.children).forEach((tr, i) => {
-    tr.cells[COL.seq].innerText = i + 1;
+    const isChecked = tr._rowCheckbox && tr._rowCheckbox.checked;
+    const cell = tr.cells[COL.seq];
+    cell.innerHTML = '';
+    
+    // Add checkbox
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'row-checkbox';
+    cb.style.marginRight = '6px';
+    cb.style.cursor = 'pointer';
+    if (isChecked) cb.checked = true;
+    
+    tr._rowCheckbox = cb;
+
+    cb.addEventListener('change', (e) => {
+       e.stopPropagation();
+       updateSelectionStats();
+    });
+
+    // Prevent row sorting toggle or other events from triggering on checkbox click
+    cb.addEventListener('click', (e) => e.stopPropagation());
+
+    cell.appendChild(cb);
+    cell.appendChild(document.createTextNode(i + 1));
   });
+}
+
+// Calculate and update stats for selected rows
+function updateSelectionStats() {
+  let count = 0;
+  let totalCost = 0;
+  let totalDistance = 0;
+  let totalMinutes = 0;
+
+  const rows = Array.from(tbody.children);
+  rows.forEach(tr => {
+    const cb = tr._rowCheckbox;
+    if (cb && cb.checked && tr._record) {
+      count++;
+      totalCost += (parseFloat(tr._record.cost) || 0);
+      totalDistance += (parseFloat(tr._record.distance) || 0);
+      totalMinutes += parseDurationToMinutes(tr._record.duration);
+    }
+  });
+
+  const statsEl = document.getElementById('selectionStats');
+  if (statsEl) {
+    if (count > 0) {
+      const hours = Math.floor(totalMinutes / 60);
+      const mins = totalMinutes % 60;
+      const timeStr = hours > 0 ? `${hours}小时${mins}分` : `${mins}分钟`;
+      
+      statsEl.innerHTML = `已选中 <b style="color:#0d6efd;">${count}</b> 条记录 &nbsp;|&nbsp; 花费 <b>¥${totalCost.toFixed(2)}</b> &nbsp;|&nbsp; 里程 <b>${totalDistance.toLocaleString()}</b> km &nbsp;|&nbsp; 时长 <b>${timeStr}</b>`;
+      statsEl.style.display = 'block';
+    } else {
+      statsEl.style.display = 'none';
+    }
+  }
+  
+  const selectAllCb = document.getElementById('selectAllRowsCb');
+  if (selectAllCb) {
+    selectAllCb.checked = (count > 0 && count === rows.length);
+  }
 }
 
 // Set the current operation mode ('add', 'modify', 'insert')
@@ -1741,6 +1845,71 @@ document.body.classList.toggle('dark', savedTheme === 'dark');
 themeToggle.textContent = savedTheme === 'dark' ? '切换浅色模式' : '切换暗色模式';
 
 // 地点标记显示设置已移除
+
+// 表格筛选事件监听
+[filterYear2, filterTrainNo, filterTrainType, filterStartStation, filterStartCity, filterEndStation, filterEndCity].forEach(input => {
+  if (input) {
+    input.addEventListener('input', () => {
+      rerenderTable(yearSelect.value);
+    });
+  }
+});
+
+if (clearTableFilterBtn) {
+  clearTableFilterBtn.addEventListener('click', () => {
+    if (filterYear2) filterYear2.value = '';
+    if (filterTrainNo) filterTrainNo.value = '';
+    if (filterTrainType) filterTrainType.value = '';
+    if (filterStartStation) filterStartStation.value = '';
+    if (filterStartCity) filterStartCity.value = '';
+    if (filterEndStation) filterEndStation.value = '';
+    if (filterEndCity) filterEndCity.value = '';
+    rerenderTable(yearSelect.value);
+  });
+}
+
+const selectAllRowsCb = document.getElementById('selectAllRowsCb');
+if (selectAllRowsCb) {
+  // Prevent clicking the checkbox from triggering the TH sorting
+  selectAllRowsCb.addEventListener('click', (e) => e.stopPropagation());
+
+  selectAllRowsCb.addEventListener('change', (e) => {
+    const checked = e.target.checked;
+    Array.from(tbody.children).forEach(tr => {
+      if (tr._rowCheckbox) {
+        tr._rowCheckbox.checked = checked;
+      }
+    });
+    updateSelectionStats();
+  });
+}
+
+const toggleSelectionBtn = document.getElementById('toggleSelectionBtn');
+let isSelectionMode = false;
+if (toggleSelectionBtn) {
+  toggleSelectionBtn.addEventListener('click', () => {
+    isSelectionMode = !isSelectionMode;
+    const historyTable = document.getElementById('historyTable');
+    if (!historyTable) return;
+    
+    if (isSelectionMode) {
+      historyTable.classList.add('show-checkboxes');
+      toggleSelectionBtn.style.background = '#dc3545'; // bootstrap danger red
+      toggleSelectionBtn.textContent = '退出多选';
+    } else {
+      historyTable.classList.remove('show-checkboxes');
+      toggleSelectionBtn.style.background = 'var(--primary-color, #0d6efd)';
+      toggleSelectionBtn.textContent = '多选统计';
+      
+      const selectAllCb = document.getElementById('selectAllRowsCb');
+      if (selectAllCb) selectAllCb.checked = false;
+      Array.from(tbody.children).forEach(tr => {
+        if (tr._rowCheckbox) tr._rowCheckbox.checked = false;
+      });
+      updateSelectionStats();
+    }
+  });
+}
 
 // Theme toggle listener
 themeToggle.addEventListener('click', () => {
@@ -2459,77 +2628,8 @@ if (addBtn) addBtn.addEventListener('click', () => {
 const addRowBtn = document.getElementById('addRowBtn');
 if (addRowBtn) {
   addRowBtn.addEventListener('click', () => {
-    createInlineNewRow();
+    insertInlineAtTop();
   });
-}
-
-function createInlineNewRow() {
-  const lastTr = tbody.lastElementChild;
-  if (lastTr) {
-    insertInlineAfter(lastTr);
-  } else {
-    // 表格为空时，创建第一行
-    const newTr = document.createElement('tr');
-    const cfg = getEntityConfig();
-    newTr.innerHTML = `
-          <td></td>
-          <td><input class=\"inline-input\" type=\"date\" placeholder=\"日期\" title=\"日期\"></td>
-          <td><input class=\"inline-input\" type=\"time\" placeholder=\"时间\" title=\"时间\"></td>
-          <td>${buildDurationSelects('00:00')}</td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainNo}\" title=\"${cfg.labels.trainNo}\"></td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startStation}\" title=\"${cfg.labels.startStation}\"></td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.startCity}\" title=\"${cfg.labels.startCity}\"></td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endStation}\" title=\"${cfg.labels.endStation}\"></td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.endCity}\" title=\"${cfg.labels.endCity}\"></td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.seatClass}\" title=\"${cfg.labels.seatClass}\"></td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.trainType}\" title=\"${cfg.labels.trainType}\"></td>
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"${cfg.labels.bureau}\" title=\"${cfg.labels.bureau}\"></td>
-          <td><input class=\"inline-input\" type=\"number\" step=\"0.01\" placeholder=\"费用 (RMB)\" title=\"费用 (RMB)\" value=\"0\"></td>
-          <td><input class=\"inline-input\" type=\"number\" step=\"1\" placeholder=\"里程 (km)\" title=\"里程 (km)\" value=\"0\"></td>
-          <td></td><!-- RMB/km -->
-          <td></td><!-- Speed -->
-          <td><input class=\"inline-input\" type=\"text\" placeholder=\"备注\" title=\"备注\"></td>
-          <td>
-            <button class=\"save\">保存</button>
-            <button class=\"cancel\">取消</button>
-          </td>
-        `;
-    tbody.appendChild(newTr);
-    newTr._isNewRow = true;
-    updateSequenceNumbers();
-
-    const c = newTr.cells;
-    const updateRowRpk = () => {
-      const cost = parseFloat(c[COL.cost].querySelector('input').value) || 0;
-      const dist = parseFloat(c[COL.distance].querySelector('input').value) || 0;
-      c[COL.rmbPerKm].textContent = dist > 0 ? (cost / dist).toFixed(4) : '';
-    };
-    c[COL.cost].querySelector('input').addEventListener('input', updateRowRpk);
-    c[COL.distance].querySelector('input').addEventListener('input', updateRowRpk);
-
-    c[COL.actions].querySelector('.save').addEventListener('click', () => {
-      const rec = collectRowData(newTr);
-      if (!rec.startStation || !rec.endStation) {
-        const cfg = getEntityConfig();
-        alert(`${cfg.labels.startStation} 和 ${cfg.labels.endStation} 不能为空！`);
-        return;
-      }
-      renderRowFromData(newTr, rec);
-      updateSequenceNumbers();
-      // 追加到 records 尾部（不重建其它记录，避免丢失路径缓存）
-      records.push({ ...rec });
-      saveRecords();
-      // 仅绘制新增线路
-      try { drawPath(newTr, records[records.length - 1]); } catch (e) { console.warn('绘制新增线路失败', e); }
-      try { updateYearLegend && updateYearLegend(); } catch { }
-      try { updateStats && updateStats(); } catch { }
-    });
-
-    c[COL.actions].querySelector('.cancel').addEventListener('click', () => {
-      newTr.remove();
-      updateSequenceNumbers();
-    });
-  }
 }
 
 // ===================== 数据导入导出功能 =====================

@@ -334,7 +334,7 @@ function renderTrainTypeCharts(recs, prefix) {
   const makeOptions = (unit) => ({
     responsive: true,
     maintainAspectRatio: true,
-    layout: { padding: { bottom: 5 } },
+    layout: { padding: { left: 10, right: 10, bottom: 12 } },
     plugins: {
       legend: { display: false },
       tooltip: {
